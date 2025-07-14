@@ -358,6 +358,13 @@ static const char *const zoneinfo_zone_spec_field_names[ZI_ZONE_SPEC_FIELD_COUNT
     "pagesets",
 };
 
+
+/* List of process names to skip during registration */
+static const char* const SKIP_PROCESS_NAMES[] = {
+    "<unknown>",
+    NULL  /* Sentinel value */
+};
+
 /* see __MAX_NR_ZONES definition in kernel mmzone.h */
 #define MAX_NR_ZONES 6
 
@@ -2570,14 +2577,42 @@ static bool init_reaper() {
     return true;
 }
 
+static bool should_skip_process(const char* cmdline) {
+    for (int i = 0; SKIP_PROCESS_NAMES[i] != NULL; i++) {
+        if (strstr(cmdline, SKIP_PROCESS_NAMES[i]) != NULL)
+            return true;
+    }
+    return false;
+}
+
+static void get_cmdline_from_pid(pid_t pid, char *cmdline, size_t cmdline_size) {
+    char path[64];
+    FILE *fp;
+
+    /* Read cmdline from /proc/[pid]/cmdline */
+    snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
+    fp = fopen(path, "r");
+    if (fp) {
+        size_t len = fread(cmdline, 1, cmdline_size - 1, fp);
+        fclose(fp);
+
+        for (size_t i = 0; i < len; i++) {
+            if (cmdline[i] == '\0')
+                cmdline[i] = ' ';
+        }
+
+        cmdline[len] = '\0';
+
+        if (len > 0 && cmdline[len - 1] == ' ')
+            cmdline[len - 1] = '\0';
+    } else {
+        snprintf(cmdline, cmdline_size, "<unknown>");
+    }
+}
+
 static void on_process_register(pid_t pid, uid_t uid, int oomadj, int pidfd) {
     struct proc *procp;
-
-    g_debug("Attempting to register process: pid=%d, uid=%d, oomadj=%d, pidfd=%d",
-            pid,
-            uid,
-            oomadj,
-            pidfd);
+    char cmdline[256] = {0};
 
     /* Sanity check the oomadj value */
     if (oomadj < OOM_SCORE_ADJ_MIN || oomadj > OOM_SCORE_ADJ_MAX) {
@@ -2591,6 +2626,17 @@ static void on_process_register(pid_t pid, uid_t uid, int oomadj, int pidfd) {
     struct proc *existing = pid_lookup(pid);
     if (existing) {
         g_debug("Process %d already registered, skipping", pid);
+        if (pidfd >= 0)
+            close(pidfd);
+        return;
+    }
+
+    /* Get cmdline for filtering check */
+    get_cmdline_from_pid(pid, cmdline, sizeof(cmdline));
+
+    /* Skip registration if process name is in skip list */
+    if (should_skip_process(cmdline)) {
+        g_debug("Skipping registration for process %d (cmdline: %s)", pid, cmdline);
         if (pidfd >= 0)
             close(pidfd);
         return;
@@ -2614,17 +2660,18 @@ static void on_process_register(pid_t pid, uid_t uid, int oomadj, int pidfd) {
     procp->asl.next = nullptr;
     procp->asl.prev = nullptr;
     procp->pidhash_next = nullptr;
+
     int hval = pid_hashfn(pid);
     procp->pidhash_next = pidhash[hval];
     pidhash[hval] = procp;
-
     proc_slot(procp);
 
-    g_debug("Successfully registered process: pid=%d, uid=%d, oomadj=%d, pidfd=%d",
+    g_debug("Successfully registered process: pid=%d, uid=%d, oomadj=%d, pidfd=%d, cmdline=%s",
             pid,
             uid,
             oomadj,
-            pidfd);
+            pidfd,
+            cmdline);
 }
 
 static void on_process_exit(pid_t pid) {
@@ -2775,7 +2822,8 @@ static void call_handler(struct event_handler_info *handler_info,
         "POLLING_DO_NOT_CHANGE",
         "POLLING_START",
         "POLLING_PAUSE",
-        "POLLING_RESUME"};
+        "POLLING_RESUME"
+    };
 
     g_debug("handler update: %s", update_names[poll_params->update]);
 
@@ -2952,7 +3000,8 @@ static void mainloop(void) {
                 "POLLING_DO_NOT_CHANGE",
                 "POLLING_START",
                 "POLLING_PAUSE",
-                "POLLING_RESUME"};
+                "POLLING_RESUME"
+            };
             g_debug("Poll state change: %s -> %s",
                     update_names[prev_update],
                     update_names[poll_params.update]);
