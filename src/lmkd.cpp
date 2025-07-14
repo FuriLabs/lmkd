@@ -305,6 +305,7 @@ struct polling_params {
 struct event_handler_info {
     int data;
     void (*handler)(int data, uint32_t events, struct polling_params *poll_params);
+    bool bypass_call_handler;
 };
 
 /* vmpressure event handler data */
@@ -2044,6 +2045,7 @@ static bool init_mp_psi(enum vmpressure_level level, bool use_new_strategy) {
 
     vmpressure_hinfo[level].handler = use_new_strategy ? mp_event_psi : mp_event_common;
     vmpressure_hinfo[level].data = level;
+    vmpressure_hinfo[level].bypass_call_handler = false;
     if (register_psi_monitor(epollfd, fd, &vmpressure_hinfo[level]) < 0) {
         destroy_psi_monitor(fd);
         return false;
@@ -2796,6 +2798,20 @@ static void resume_polling(struct polling_params *poll_params, struct timespec c
     poll_params->paused_handler = NULL;
 }
 
+static const char* get_update_name(int update) {
+    static const char *update_names[] = {
+        "POLLING_DO_NOT_CHANGE",
+        "POLLING_START",
+        "POLLING_PAUSE",
+        "POLLING_RESUME",
+        "UNKNOWN"
+    };
+
+    if (update >= 0 && update <= 3)
+        return update_names[update];
+    return update_names[4];
+}
+
 static void call_handler(struct event_handler_info *handler_info,
                          struct polling_params *poll_params,
                          uint32_t events) {
@@ -2818,14 +2834,7 @@ static void call_handler(struct event_handler_info *handler_info,
     if (poll_params->poll_handler == handler_info)
         poll_params->last_poll_tm = curr_tm;
 
-    const char *update_names[] = {
-        "POLLING_DO_NOT_CHANGE",
-        "POLLING_START",
-        "POLLING_PAUSE",
-        "POLLING_RESUME"
-    };
-
-    g_debug("handler update: %s", update_names[poll_params->update]);
+    g_debug("handler update: %s", get_update_name(poll_params->update));
 
     switch (poll_params->update) {
     case POLLING_START:
@@ -2985,10 +2994,14 @@ static void mainloop(void) {
 
             if (evt->data.ptr) {
                 handler_info = (struct event_handler_info *)evt->data.ptr;
-                g_debug("Event %d: Calling handler (data=%d)",
-                        i,
-                        handler_info->data);
-                call_handler(handler_info, &poll_params, evt->events);
+                if (handler_info->bypass_call_handler) {
+                    g_debug("Event %d: Direct handler call (data=%d)", i, handler_info->data);
+                    handler_info->handler(handler_info->data, evt->events, nullptr);
+                } else {
+                    g_debug("Event %d: Calling handler via call_handler (data=%d)",
+                            i, handler_info->data);
+                    call_handler(handler_info, &poll_params, evt->events);
+                }
             } else {
                 g_debug("Event %d: No handler (data.ptr is NULL)", i);
             }
@@ -2996,15 +3009,9 @@ static void mainloop(void) {
 
         static enum polling_update prev_update = POLLING_DO_NOT_CHANGE;
         if (poll_params.update != prev_update) {
-            const char *update_names[] = {
-                "POLLING_DO_NOT_CHANGE",
-                "POLLING_START",
-                "POLLING_PAUSE",
-                "POLLING_RESUME"
-            };
             g_debug("Poll state change: %s -> %s",
-                    update_names[prev_update],
-                    update_names[poll_params.update]);
+                    get_update_name(prev_update),
+                    get_update_name(poll_params.update));
             prev_update = poll_params.update;
         }
 

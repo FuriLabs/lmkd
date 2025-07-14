@@ -32,6 +32,7 @@
 struct event_handler_info {
     int data;
     void (*handler)(int data, uint32_t events, struct polling_params *poll_params);
+    bool bypass_call_handler;
 };
 
 struct polling_params {
@@ -77,6 +78,18 @@ static int set_proc_ev_listen(int nl_sock, int enable) {
     return 0;
 }
 
+
+uid_t processwatcher_get_process_uid(pid_t pid) {
+    char path[PATH_MAX];
+    struct stat st;
+
+    snprintf(path, sizeof(path), "/proc/%d", pid);
+    if (stat(path, &st) == 0)
+        return st.st_uid;
+
+    return 0;
+}
+
 static void netlink_event_handler(int data, uint32_t events, struct polling_params *poll_params) {
     (void)data;
     (void)events;
@@ -119,6 +132,14 @@ static void netlink_event_handler(int data, uint32_t events, struct polling_para
                     /* Get process info and notify callback */
                     if (child_pid > 1 && pw_state.config.on_register) {
                         uid_t uid = processwatcher_get_process_uid(child_pid);
+
+                        /* Skip root processes (UID 0) */
+                        if (uid == 0) {
+                            if (pw_state.config.enable_debug)
+                                g_debug("Skipping root process %d", child_pid);
+                            break;
+                        }
+
                         int oomadj = processwatcher_get_oom_score_adj(child_pid);
                         int pidfd = -1;
 
@@ -175,17 +196,6 @@ int processwatcher_get_oom_score_adj(pid_t pid) {
     return score;
 }
 
-uid_t processwatcher_get_process_uid(pid_t pid) {
-    char path[PATH_MAX];
-    struct stat st;
-
-    snprintf(path, sizeof(path), "/proc/%d", pid);
-    if (stat(path, &st) == 0)
-        return st.st_uid;
-
-    return 0;
-}
-
 void processwatcher_register_all_existing(void) {
     DIR *proc_dir;
     struct dirent *entry;
@@ -211,6 +221,14 @@ void processwatcher_register_all_existing(void) {
         pid = atoi(entry->d_name);
         if (pid > 1) {
             uid_t uid = processwatcher_get_process_uid(pid);
+
+            /* Skip root processes (UID 0) */
+            if (uid == 0) {
+                if (pw_state.config.enable_debug)
+                    g_debug("Skipping existing root process %d", pid);
+                continue;
+            }
+
             int oomadj = processwatcher_get_oom_score_adj(pid);
             int pidfd = -1;
 
@@ -260,9 +278,8 @@ bool processwatcher_init(const struct processwatcher_config *config) {
 
     int flags = fcntl(pw_state.netlink_sock, F_GETFL, 0);
     if (fcntl(pw_state.netlink_sock, F_SETFL, flags | O_NONBLOCK) < 0) {
-        if (pw_state.config.enable_debug) {
+        if (pw_state.config.enable_debug)
             g_printerr("Failed to set socket non-blocking: %s", strerror(errno));
-        }
         close(pw_state.netlink_sock);
         pw_state.netlink_sock = -1;
         return false;
@@ -291,6 +308,7 @@ bool processwatcher_init(const struct processwatcher_config *config) {
     if (pw_state.config.epollfd >= 0) {
         pw_state.netlink_hinfo.data = 0;
         pw_state.netlink_hinfo.handler = netlink_event_handler;
+        pw_state.netlink_hinfo.bypass_call_handler = true;
         epev.events = EPOLLIN;
         epev.data.ptr = &pw_state.netlink_hinfo;
 
