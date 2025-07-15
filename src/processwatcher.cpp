@@ -71,8 +71,7 @@ static int set_proc_ev_listen(int nl_sock, int enable) {
 
     int ret = send(nl_sock, nlh, nlh->nlmsg_len, 0);
     if (ret == -1) {
-        if (pw_state.config.enable_debug)
-            g_printerr("Failed to set proc event listen: %s", strerror(errno));
+        g_printerr("Failed to set proc event listen: %s", strerror(errno));
         return -1;
     }
     return 0;
@@ -100,10 +99,8 @@ static void netlink_event_handler(int data, uint32_t events, struct polling_para
 
     len = recv(pw_state.netlink_sock, buf, sizeof(buf), 0);
     if (len < 0) {
-        if (errno != EINTR && errno != EAGAIN) {
-            if (pw_state.config.enable_debug)
-                g_printerr("Netlink recv failed: %s", strerror(errno));
-        }
+        if (errno != EINTR && errno != EAGAIN)
+            g_printerr("Netlink recv failed: %s", strerror(errno));
         return;
     }
 
@@ -113,8 +110,7 @@ static void netlink_event_handler(int data, uint32_t events, struct polling_para
             continue;
 
         if (nlh->nlmsg_type == NLMSG_ERROR) {
-            if (pw_state.config.enable_debug)
-                g_debug("Received error message from netlink");
+            g_debug("Received error message from netlink");
             continue;
         }
 
@@ -126,8 +122,7 @@ static void netlink_event_handler(int data, uint32_t events, struct polling_para
                 switch (ev->what) {
                 case PROC_EVENT_FORK: {
                     pid_t child_pid = ev->event_data.fork.child_pid;
-                    if (pw_state.config.enable_debug)
-                        g_debug("Fork event: new process %d", child_pid);
+                    g_debug("Fork event: new process %d", child_pid);
 
                     /* Get process info and notify callback */
                     if (child_pid > 1 && pw_state.config.on_register) {
@@ -135,8 +130,7 @@ static void netlink_event_handler(int data, uint32_t events, struct polling_para
 
                         /* Skip root processes (UID 0) */
                         if (uid == 0) {
-                            if (pw_state.config.enable_debug)
-                                g_debug("Skipping root process %d", child_pid);
+                            g_debug("Skipping root process %d", child_pid);
                             break;
                         }
 
@@ -151,8 +145,7 @@ static void netlink_event_handler(int data, uint32_t events, struct polling_para
                 } break;
                 case PROC_EVENT_EXIT: {
                     pid_t pid = ev->event_data.exit.process_pid;
-                    if (pw_state.config.enable_debug)
-                        g_debug("Exit event: process %d died", pid);
+                    g_debug("Exit event: process %d died", pid);
                     if (pw_state.config.on_exit)
                         pw_state.config.on_exit(pid);
                 } break;
@@ -204,13 +197,12 @@ void processwatcher_register_all_existing(void) {
 
     if (!pw_state.initialized || !pw_state.config.on_register)
         return;
-    if (pw_state.config.enable_debug)
-        g_debug("Registering all existing processes...");
+
+    g_debug("Registering all existing processes...");
 
     proc_dir = opendir("/proc");
     if (!proc_dir) {
-        if (pw_state.config.enable_debug)
-            g_printerr("Failed to open /proc: %s", strerror(errno));
+        g_printerr("Failed to open /proc: %s", strerror(errno));
         return;
     }
 
@@ -224,8 +216,7 @@ void processwatcher_register_all_existing(void) {
 
             /* Skip root processes (UID 0) */
             if (uid == 0) {
-                if (pw_state.config.enable_debug)
-                    g_debug("Skipping existing root process %d", pid);
+                g_debug("Skipping existing root process %d", pid);
                 continue;
             }
 
@@ -246,8 +237,7 @@ void processwatcher_register_all_existing(void) {
 
     closedir(proc_dir);
 
-    if (pw_state.config.enable_debug)
-        g_debug("Registered %d existing processes", count);
+    g_debug("Registered %d existing processes", count);
 }
 
 bool processwatcher_init(const struct processwatcher_config *config) {
@@ -266,20 +256,17 @@ bool processwatcher_init(const struct processwatcher_config *config) {
 
     pw_state.config = *config;
 
-    if (pw_state.config.enable_debug)
-        g_debug("Initializing process watcher...");
+    g_debug("Initializing process watcher...");
 
     pw_state.netlink_sock = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_CONNECTOR);
     if (pw_state.netlink_sock < 0) {
-        if (pw_state.config.enable_debug)
-            g_printerr("Failed to create netlink socket: %s", strerror(errno));
+        g_printerr("Failed to create netlink socket: %s", strerror(errno));
         return false;
     }
 
     int flags = fcntl(pw_state.netlink_sock, F_GETFL, 0);
     if (fcntl(pw_state.netlink_sock, F_SETFL, flags | O_NONBLOCK) < 0) {
-        if (pw_state.config.enable_debug)
-            g_printerr("Failed to set socket non-blocking: %s", strerror(errno));
+        g_printerr("Failed to set socket non-blocking: %s", strerror(errno));
         close(pw_state.netlink_sock);
         pw_state.netlink_sock = -1;
         return false;
@@ -291,8 +278,7 @@ bool processwatcher_init(const struct processwatcher_config *config) {
     addr.nl_groups = CN_IDX_PROC;
 
     if (bind(pw_state.netlink_sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        if (pw_state.config.enable_debug)
-            g_printerr("Failed to bind netlink socket: %s", strerror(errno));
+        g_printerr("Failed to bind netlink socket: %s", strerror(errno));
         close(pw_state.netlink_sock);
         pw_state.netlink_sock = -1;
         return false;
@@ -313,8 +299,7 @@ bool processwatcher_init(const struct processwatcher_config *config) {
         epev.data.ptr = &pw_state.netlink_hinfo;
 
         if (epoll_ctl(pw_state.config.epollfd, EPOLL_CTL_ADD, pw_state.netlink_sock, &epev) != 0) {
-            if (pw_state.config.enable_debug)
-                g_printerr("Failed to add netlink socket to epoll: %s", strerror(errno));
+            g_printerr("Failed to add netlink socket to epoll: %s", strerror(errno));
             set_proc_ev_listen(pw_state.netlink_sock, 0);
             close(pw_state.netlink_sock);
             pw_state.netlink_sock = -1;
@@ -326,16 +311,16 @@ bool processwatcher_init(const struct processwatcher_config *config) {
 
     pw_state.initialized = true;
 
-    if (pw_state.config.enable_debug)
-        g_debug("Process watcher initialized successfully");
+    g_debug("Process watcher initialized successfully");
+
     return true;
 }
 
 void processwatcher_cleanup(void) {
     if (!pw_state.initialized)
         return;
-    if (pw_state.config.enable_debug)
-        g_debug("Cleaning up process watcher...");
+
+    g_debug("Cleaning up process watcher...");
 
     if (pw_state.netlink_sock >= 0) {
         /* Remove from epoll if it was added */
@@ -356,8 +341,7 @@ void processwatcher_cleanup(void) {
     memset(&pw_state.netlink_hinfo, 0, sizeof(pw_state.netlink_hinfo));
     pw_state.initialized = false;
 
-    if (pw_state.config.enable_debug)
-        g_debug("Process watcher cleanup complete");
+    g_debug("Process watcher cleanup complete");
 }
 
 bool processwatcher_is_initialized(void) {

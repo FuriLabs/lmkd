@@ -251,7 +251,6 @@ static int last_kill_pid_or_fd = -1;
 static struct timespec last_kill_tm;
 
 /* lmkd configurable parameters */
-static bool debug_process_killing;
 static bool enable_pressure_upgrade;
 static int64_t upgrade_pressure;
 static int64_t downgrade_pressure;
@@ -1413,23 +1412,21 @@ static void stop_wait_for_proc_kill(bool finished) {
     if (last_kill_pid_or_fd < 0)
         return;
 
-    if (debug_process_killing) {
-        struct timespec curr_tm;
+    struct timespec curr_tm;
 
-        if (clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm) != 0)
-            /*
-             * curr_tm is used here merely to report kill duration, so this failure is not fatal.
-             * Log an error and continue.
-             */
-            g_printerr("Failed to get current time");
+    if (clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm) != 0)
+        /*
+         * curr_tm is used here merely to report kill duration, so this failure is not fatal.
+         * Log an error and continue.
+         */
+        g_printerr("Failed to get current time");
 
-        if (finished)
-            g_debug("Process got killed in %ldms",
-                    get_time_diff_ms(&last_kill_tm, &curr_tm));
-        else
-            g_debug("Stop waiting for process kill after %ldms",
-                    get_time_diff_ms(&last_kill_tm, &curr_tm));
-    }
+    if (finished)
+        g_debug("Process got killed in %ldms",
+                get_time_diff_ms(&last_kill_tm, &curr_tm));
+    else
+        g_debug("Stop waiting for process kill after %ldms",
+                get_time_diff_ms(&last_kill_tm, &curr_tm));
 
     if (pidfd_supported) {
         /* unregister fd */
@@ -1636,10 +1633,9 @@ static int64_t get_memory_usage(struct reread_data *file_data) {
 void record_low_pressure_levels(union meminfo *mi) {
     if (low_pressure_mem.min_nr_free_pages == -1 ||
         low_pressure_mem.min_nr_free_pages > mi->field.nr_free_pages) {
-        if (debug_process_killing)
-            g_debug("Low pressure min memory update from %" PRId64 " to %" PRId64,
-                    low_pressure_mem.min_nr_free_pages,
-                    mi->field.nr_free_pages);
+        g_debug("Low pressure min memory update from %" PRId64 " to %" PRId64,
+                low_pressure_mem.min_nr_free_pages,
+                mi->field.nr_free_pages);
         low_pressure_mem.min_nr_free_pages = mi->field.nr_free_pages;
     }
 
@@ -1653,10 +1649,9 @@ void record_low_pressure_levels(union meminfo *mi) {
         (low_pressure_mem.max_nr_free_pages < mi->field.nr_free_pages &&
          (mi->field.nr_free_pages - low_pressure_mem.max_nr_free_pages) <
              (low_pressure_mem.max_nr_free_pages * 0.1))) {
-        if (debug_process_killing)
-            g_debug("Low pressure max memory update from %" PRId64 " to %" PRId64,
-                    low_pressure_mem.max_nr_free_pages,
-                    mi->field.nr_free_pages);
+        g_debug("Low pressure max memory update from %" PRId64 " to %" PRId64,
+                low_pressure_mem.max_nr_free_pages,
+                mi->field.nr_free_pages);
         low_pressure_mem.max_nr_free_pages = mi->field.nr_free_pages;
     }
 }
@@ -2264,8 +2259,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
     static struct reread_data memsw_usage_file_data = {nullptr, -1};
     static bool paths_initialized = false;
 
-    if (debug_process_killing)
-        g_debug("%s memory pressure event is triggered", level_name[level]);
+    g_debug("%s memory pressure event is triggered", level_name[level]);
 
     if (!use_psi_monitors) {
         /*
@@ -2355,13 +2349,12 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
         }
 
         if (min_score_adj == OOM_SCORE_ADJ_MAX + 1) {
-            if (debug_process_killing && lowmem_targets_size)
-                g_debug("Ignore %s memory pressure event "
-                        "(free memory=%ldkB, cache=%ldkB, limit=%ldkB)",
-                        level_name[level],
-                        other_free * page_k,
-                        other_file * page_k,
-                        (long)lowmem_minfree[lowmem_targets_size - 1] * page_k);
+            g_debug("Ignore %s memory pressure event "
+                    "(free memory=%ldkB, cache=%ldkB, limit=%ldkB)",
+                    level_name[level],
+                    other_free * page_k,
+                    other_file * page_k,
+                    (long)lowmem_minfree[lowmem_targets_size - 1] * page_k);
             return;
         }
 
@@ -2400,8 +2393,7 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
         /* We are swapping too much. */
         if (mem_pressure < upgrade_pressure) {
             level = upgrade_level(level);
-            if (debug_process_killing)
-                g_debug("Event upgraded to %s", level_name[level]);
+            g_debug("Event upgraded to %s", level_name[level]);
         }
     }
 
@@ -2412,12 +2404,10 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
         /* If the pressure is larger than downgrade_pressure lmk will not
          * kill any process, since enough memory is available. */
         if (mem_pressure > downgrade_pressure) {
-            if (debug_process_killing)
-                g_debug("Ignore %s memory pressure", level_name[level]);
+            g_debug("Ignore %s memory pressure", level_name[level]);
             return;
         } else if (level == VMPRESS_LEVEL_CRITICAL && mem_pressure > upgrade_pressure) {
-            if (debug_process_killing)
-                g_debug("Downgrade critical memory pressure");
+            g_debug("Downgrade critical memory pressure");
             /* Downgrade event, since enough memory available. */
             level = downgrade_level(level);
         }
@@ -2426,10 +2416,8 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
 do_kill:
     if (low_ram_device) {
         /* For low memory devices kill only one task */
-        if (find_and_kill_process(level_oomadj[level], NULL, &mi, &wi, &curr_tm, NULL) == 0) {
-            if (debug_process_killing)
-                g_debug("Nothing to kill");
-        }
+        if (find_and_kill_process(level_oomadj[level], NULL, &mi, &wi, &curr_tm, NULL) == 0)
+            g_debug("Nothing to kill");
     } else {
         int pages_freed;
         static struct timespec last_report_tm;
@@ -2438,11 +2426,10 @@ do_kill:
         if (!use_minfree_levels) {
             /* Free up enough memory to downgrate the memory pressure to low level */
             if (mi.field.nr_free_pages >= low_pressure_mem.max_nr_free_pages) {
-                if (debug_process_killing)
-                    g_debug("Ignoring pressure since more memory is "
-                            "available (%" PRId64 ") than watermark (%" PRId64 ")",
-                            mi.field.nr_free_pages,
-                            low_pressure_mem.max_nr_free_pages);
+                g_debug("Ignoring pressure since more memory is "
+                        "available (%" PRId64 ") than watermark (%" PRId64 ")",
+                        mi.field.nr_free_pages,
+                        low_pressure_mem.max_nr_free_pages);
                 return;
             }
             min_score_adj = level_oomadj[level];
@@ -2677,8 +2664,7 @@ static void on_process_register(pid_t pid, uid_t uid, int oomadj, int pidfd) {
 }
 
 static void on_process_exit(pid_t pid) {
-    if (debug_process_killing)
-        g_debug("Process %d exited, removing from tracking", pid);
+    g_debug("Process %d exited, removing from tracking", pid);
 
     /* Remove from tracking */
     pid_remove(pid);
@@ -2694,7 +2680,6 @@ static bool init_process_registration(void) {
     config.maxevents = &maxevents;
     config.on_register = on_process_register;
     config.on_exit = on_process_exit;
-    config.enable_debug = debug_process_killing;
 
     if (!processwatcher_init(&config)) {
         g_printerr("Failed to initialize process watcher");
@@ -3031,7 +3016,6 @@ static void update_props() {
         get_config_int32("medium", 800);
     level_oomadj[VMPRESS_LEVEL_CRITICAL] =
         get_config_int32("critical", 0);
-    debug_process_killing = get_config_bool("debug", false);
 
     /* By default disable upgrade/downgrade logic */
     enable_pressure_upgrade =
@@ -3064,8 +3048,6 @@ static void update_props() {
     swap_util_max = clamp(0, 100, get_config_int32("swap_util_max", 100));
     filecache_min_kb = get_config_int64("filecache_min_kb", 0);
     stall_limit_critical = get_config_int64("stall_limit_critical", 100);
-
-    reaper.enable_debug(debug_process_killing);
 }
 
 int main(int argc __unused, char **argv __unused) {
