@@ -25,6 +25,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <pwd.h>
 
 #include "pidfd-compat.h"
 #include "processwatcher.h"
@@ -39,12 +40,57 @@ struct polling_params {
     void *dummy;
 };
 
+#define MAX_SYSTEM_USERS 32
+
 static struct {
     int netlink_sock;
     struct processwatcher_config config;
     struct event_handler_info netlink_hinfo;
     bool initialized;
-} pw_state = {-1, {0, nullptr, nullptr, nullptr, false}, {0, nullptr}, false};
+    uid_t system_uids[MAX_SYSTEM_USERS];
+    int system_uid_count;
+} pw_state = {-1, {0, nullptr, nullptr, nullptr, false}, {0, nullptr}, false, {0}, 0};
+
+static const char *system_users[] = {
+    "dnsmasq",
+    "nobody",
+    "radio",
+    "geoclue",
+    "systemd-network",
+    "systemd-timesync",
+    "systemd-resolve",
+    "_apt",
+    "polkitd",
+    "avahi",
+    "messagebus",
+    "system"
+};
+
+static void cache_system_uids(void) {
+    pw_state.system_uid_count = 0;
+
+    /* Always include root (UID 0) */
+    pw_state.system_uids[pw_state.system_uid_count++] = 0;
+
+    /* Look up system users */
+    for (size_t i = 0; i < sizeof(system_users) / sizeof(system_users[0]); i++) {
+        struct passwd *pw = getpwnam(system_users[i]);
+        if (pw && pw_state.system_uid_count < MAX_SYSTEM_USERS) {
+            pw_state.system_uids[pw_state.system_uid_count++] = pw->pw_uid;
+            g_debug("Cached system user %s with UID %d", system_users[i], pw->pw_uid);
+        }
+    }
+
+    g_debug("Cached %d system UIDs for filtering", pw_state.system_uid_count);
+}
+
+static bool is_system_uid(uid_t uid) {
+    for (int i = 0; i < pw_state.system_uid_count; i++) {
+        if (pw_state.system_uids[i] == uid)
+            return true;
+    }
+    return false;
+}
 
 static int set_proc_ev_listen(int nl_sock, int enable) {
     enum proc_cn_mcast_op mcast_op;
@@ -77,7 +123,6 @@ static int set_proc_ev_listen(int nl_sock, int enable) {
     return 0;
 }
 
-
 uid_t processwatcher_get_process_uid(pid_t pid) {
     char path[PATH_MAX];
     struct stat st;
@@ -85,7 +130,6 @@ uid_t processwatcher_get_process_uid(pid_t pid) {
     snprintf(path, sizeof(path), "/proc/%d", pid);
     if (stat(path, &st) == 0)
         return st.st_uid;
-
     return 0;
 }
 
@@ -128,9 +172,9 @@ static void netlink_event_handler(int data, uint32_t events, struct polling_para
                     if (child_pid > 1 && pw_state.config.on_register) {
                         uid_t uid = processwatcher_get_process_uid(child_pid);
 
-                        /* Skip root processes (UID 0) */
-                        if (uid == 0) {
-                            g_debug("Skipping root process %d", child_pid);
+                        /* Skip system processes */
+                        if (is_system_uid(uid)) {
+                            g_debug("Skipping system process %d (UID %d)", child_pid, uid);
                             break;
                         }
 
@@ -214,9 +258,9 @@ void processwatcher_register_all_existing(void) {
         if (pid > 1) {
             uid_t uid = processwatcher_get_process_uid(pid);
 
-            /* Skip root processes (UID 0) */
-            if (uid == 0) {
-                g_debug("Skipping existing root process %d", pid);
+            /* Skip system processes */
+            if (is_system_uid(uid)) {
+                g_debug("Skipping existing system process %d (UID %d)", pid, uid);
                 continue;
             }
 
@@ -257,6 +301,9 @@ bool processwatcher_init(const struct processwatcher_config *config) {
     pw_state.config = *config;
 
     g_debug("Initializing process watcher...");
+
+    /* Cache system user UIDs for filtering */
+    cache_system_uids();
 
     pw_state.netlink_sock = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_CONNECTOR);
     if (pw_state.netlink_sock < 0) {
@@ -339,6 +386,8 @@ void processwatcher_cleanup(void) {
 
     memset(&pw_state.config, 0, sizeof(pw_state.config));
     memset(&pw_state.netlink_hinfo, 0, sizeof(pw_state.netlink_hinfo));
+    pw_state.system_uid_count = 0;
+    memset(pw_state.system_uids, 0, sizeof(pw_state.system_uids));
     pw_state.initialized = false;
 
     g_debug("Process watcher cleanup complete");
