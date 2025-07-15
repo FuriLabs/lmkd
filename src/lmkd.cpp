@@ -493,7 +493,6 @@ union meminfo {
         int64_t cma_free;
         /* fields below are calculated rather than read from the file */
         int64_t nr_file_pages;
-        int64_t total_gpu_kb;
     } field;
     int64_t arr[MI_FIELD_COUNT];
 };
@@ -858,9 +857,8 @@ static int pid_remove(int pid) {
      * Close pidfd here if we are not waiting for corresponding process to die,
      * in which case stop_wait_for_proc_kill() will close the pidfd later
      */
-    if (procp->pidfd >= 0 && procp->pidfd != last_kill_pid_or_fd) {
+    if (procp->pidfd >= 0 && procp->pidfd != last_kill_pid_or_fd)
         close(procp->pidfd);
-    }
     free(procp);
     return 0;
 }
@@ -869,9 +867,8 @@ static void pid_invalidate(int pid) {
     std::shared_lock lock(adjslot_list_lock);
     struct proc *procp = pid_lookup(pid);
 
-    if (procp) {
+    if (procp)
         procp->valid = false;
-    }
 }
 
 static void inc_killcnt(int oomadj) {
@@ -1103,10 +1100,6 @@ static bool meminfo_parse_line(char *line, union meminfo *mi) {
     return (match_res != PARSE_FAIL);
 }
 
-static int64_t read_gpu_total_kb() {
-    return 0; /* GPU memory tracking not supported on Linux port */
-}
-
 static int meminfo_parse(union meminfo *mi) {
     static struct reread_data file_data = {
         .filename = MEMINFO_PATH,
@@ -1130,7 +1123,6 @@ static int meminfo_parse(union meminfo *mi) {
     }
     mi->field.nr_file_pages = mi->field.cached + mi->field.swap_cached +
                               mi->field.buffers;
-    mi->field.total_gpu_kb = read_gpu_total_kb();
 
     return 0;
 }
@@ -1170,9 +1162,8 @@ static int vmstat_parse(union vmstat *vs) {
 
     memset(vs, 0, sizeof(union vmstat));
 
-    if ((buf = reread_file(&file_data)) == NULL) {
+    if ((buf = reread_file(&file_data)) == NULL)
         return -1;
-    }
 
     for (line = strtok_r(buf, "\n", &save_ptr); line;
          line = strtok_r(NULL, "\n", &save_ptr)) {
@@ -1534,7 +1525,7 @@ static int kill_one_process(struct proc *procp, int min_oom_score, struct kill_i
 
     inc_killcnt(procp->oomadj);
 
-    if (ki) {
+    if (ki)
         g_print("Kill '%s' (pid=%d, uid=%d, oom_score_adj=%d) to free %" PRId64 "kB rss, %" PRId64
                 "kB swap; reason: %s (thrashing=%d%%, max_thrashing=%d%%, free_mem=%" PRId64 "kB, free_swap=%" PRId64 "kB)\n",
                 taskname,
@@ -1548,7 +1539,7 @@ static int kill_one_process(struct proc *procp, int min_oom_score, struct kill_i
                 ki->max_thrashing,
                 mi->field.nr_free_pages * page_k,
                 mi->field.free_swap * page_k);
-    } else {
+    else
         g_print("Kill '%s' (pid=%d, uid=%d, oom_score_adj=%d) to free %" PRId64 "kB rss, %" PRId64
                 "kB swap (free_mem=%" PRId64 "kB, free_swap=%" PRId64 "kB)\n",
                 taskname,
@@ -1559,7 +1550,6 @@ static int kill_one_process(struct proc *procp, int min_oom_score, struct kill_i
                 swap_kb,
                 mi->field.nr_free_pages * page_k,
                 mi->field.free_swap * page_k);
-    }
 
     result = rss_kb / page_k;
 
@@ -1605,6 +1595,7 @@ static int find_and_kill_process(int min_score_adj, struct kill_info *ki, union 
                 break;
             }
         }
+
         if (killed_size)
             break;
     }
@@ -2057,11 +2048,10 @@ static void destroy_mp_psi(enum vmpressure_level level) {
     if (fd < 0)
         return;
 
-    if (unregister_psi_monitor(epollfd, fd) < 0) {
+    if (unregister_psi_monitor(epollfd, fd) < 0)
         g_printerr("Failed to unregister psi monitor for %s memory pressure; errno=%d",
                    level_name[level],
                    errno);
-    }
     maxevents--;
     destroy_psi_monitor(fd);
     mpevfd[level] = -1;
@@ -2465,6 +2455,7 @@ do_kill:
 
         last_report_tm = curr_tm;
     }
+
     if (is_waiting_for_kill())
         /* pause polling if we are waiting for process death notification */
         poll_params->update = POLLING_PAUSE;
