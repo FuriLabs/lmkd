@@ -361,8 +361,113 @@ static const char *const zoneinfo_zone_spec_field_names[ZI_ZONE_SPEC_FIELD_COUNT
 
 /* List of process names to skip during registration */
 static const char* const SKIP_PROCESS_NAMES[] = {
-    "<unknown>",
-    NULL  /* Sentinel value */
+   "<unknown>",
+   "/usr/libexec/xdg-permission-store",
+   "/usr/libexec/flashlightd",
+   "/usr/libexec/localsearch-3",
+   "/usr/libexec/xdg-desktop-portal-gtk",
+   "/usr/libexec/gsd-printer",
+   "/usr/libexec/evolution-calendar-factory",
+   "/usr/libexec/xdg-desktop-portal-gnome",
+   "/usr/libexec/flatpak-session-helper",
+   "/usr/bin/callaudiod",
+   "/usr/libexec/feedbackd",
+   "/usr/libexec/evolution-source-registry",
+   "/usr/libexec/at-spi-bus-launcher",
+   "/usr/libexec/gsd-adapter",
+   "/usr/libexec/phosh",
+   "/usr/bin/dbus-daemon",
+   "/usr/libexec/pqdbus",
+   "/usr/libexec/gvfsd",
+   "/usr/libexec/dconf-service",
+   "python3 /usr/bin/mmsd",
+   "/usr/bin/gnome-keyring-daemon",
+   "/usr/libexec/gnome-session-binary",
+   "/usr/libexec/android-vibrator",
+   "/usr/libexec/assistant-button",
+   "/usr/libexec/biomd-session",
+   "python3 /usr/libexec/furios-gallery-daemon",
+   "/usr/libexec/gcr-ssh-agent",
+   "/usr/libexec/gesture-sensors",
+   "/usr/libexec/gnome-session-ctl",
+   "/usr/libexec/bluetooth/obexd",
+   "/usr/bin/phoc",
+   "(sd-pam)",
+   "/usr/bin/mpris-proxy",
+   "/usr/bin/pipewire",
+   "/usr/bin/pulseaudio",
+   "media.swcodec",
+   "media.codec",
+   "media.extractor",
+   "media.metrics",
+   "/usr/lib/systemd/systemd",
+   "/usr/sbin/vnstatd",
+   "/usr/libexec/goa-daemon",
+   "/usr/libexec/goa-identity-service",
+   "/usr/libexec/evolution-addressbook-factory",
+   "/usr/libexec/at-spi2-registryd",
+   "/usr/libexec/gvfs-udisks2-volume-monitor",
+   "/usr/libexec/gvfs-goa-volume-monitor",
+   "/usr/libexec/gvfs-afc-volume-monitor",
+   "/usr/libexec/gvfs-mtp-volume-monitor",
+   "/usr/libexec/gvfs-gphoto2-volume-monitor",
+   "/usr/bin/gnome-calls",
+   "/usr/libexec/gsd-a11y-settings",
+   "/usr/libexec/gsd-color",
+   "/usr/libexec/gsd-datetime",
+   "/usr/libexec/gsd-housekeeping",
+   "/usr/libexec/gsd-keyboard",
+   "/usr/libexec/gsd-media-keys",
+   "/usr/libexec/gsd-power",
+   "/usr/libexec/gsd-print-notifications",
+   "/usr/libexec/gsd-rfkill",
+   "/usr/libexec/gsd-screensaver-proxy",
+   "/usr/libexec/gsd-sharing",
+   "/usr/libexec/gsd-smartcard",
+   "/usr/libexec/gsd-sound",
+   "/usr/libexec/gsd-usb-protection",
+   "/usr/libexec/gsd-wacom",
+   "/usr/libexec/gsd-wwan",
+   "/usr/bin/phosh-osk-stub",
+   "/usr/bin/chatty",
+   "/usr/libexec/xdg-desktop-portal",
+   "/usr/libexec/evolution-alarm-notify",
+   "dbus-monitor",
+   "/usr/libexec/xdg-desktop-portal-phosh",
+   "/usr/libexec/gvfsd-metadata",
+   "/usr/libexec/gvfsd-recent",
+   "/usr/libexec/gvfsd-trash",
+   "/usr/libexec/evolution-data-server/evolution-alarm-notify",
+   "/usr/bin/gnome-clocks",
+   "python3 /usr/bin/andromeda",
+   /* Andromeda */
+   "com.android.providers.media.module",
+   "com.android.nfc",
+   "io.furios.launcher",
+   "android.process.acore",
+   "io.furios.launcher:minimal",
+   "com.google.android.gms",
+   "com.android.permissioncontroller",
+   "com.android.systemui",
+   "com.android.networkstack.process",
+   "android.ext.services",
+   "webview_zygote",
+   "com.android.smspush",
+   "com.android.cellbroadcastreceiver.module",
+   "com.android.dialer",
+   "com.android.inputmethod.latin",
+   "com.android.messaging",
+   "com.android.externalstorage",
+   "android.process.media",
+   NULL  /* Sentinel value */
+};
+
+/* List of process prefixes to skip during registration */
+static const char* const SKIP_PROCESS_WITH_PREFIX[] = {
+   "/vendor/bin/",
+   "/system/bin/",
+   "/apex/",
+   NULL  /* Sentinel value */
 };
 
 /* see __MAX_NR_ZONES definition in kernel mmzone.h */
@@ -769,24 +874,56 @@ static char *proc_get_name(int pid, char *buf, size_t buf_size) {
     int fd;
     char *cp;
     ssize_t ret;
-
     /* gid containing AID_READPROC required */
     snprintf(path, PATH_MAX, "/proc/%d/cmdline", pid);
     fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd == -1) {
+    if (fd == -1)
         return NULL;
-    }
+
     ret = read_all(fd, buf, buf_size - 1);
     close(fd);
     if (ret < 0)
         return NULL;
     buf[ret] = '\0';
 
+    /* Strip trailing whitespace */
+    char *end = buf + ret - 1;
+    while (end > buf && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) {
+        *end = '\0';
+        end--;
+    }
+
     cp = strchr(buf, ' ');
     if (cp)
         *cp = '\0';
-
     return buf;
+}
+
+static void get_cmdline_from_pid(pid_t pid, char *cmdline, size_t cmdline_size) {
+    char path[64];
+    FILE *fp;
+
+    /* Read cmdline from /proc/[pid]/cmdline */
+    snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
+    fp = fopen(path, "r");
+    if (fp) {
+        size_t len = fread(cmdline, 1, cmdline_size - 1, fp);
+        fclose(fp);
+        for (size_t i = 0; i < len; i++) {
+            if (cmdline[i] == '\0')
+                cmdline[i] = ' ';
+        }
+        cmdline[len] = '\0';
+
+        /* Strip trailing whitespace */
+        char *end = cmdline + len - 1;
+        while (end > cmdline && (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r')) {
+            *end = '\0';
+            end--;
+        }
+    } else {
+        snprintf(cmdline, cmdline_size, "<unknown>");
+    }
 }
 
 static struct proc *pid_lookup(int pid) {
@@ -2558,36 +2695,36 @@ static bool init_reaper() {
 }
 
 static bool should_skip_process(const char* cmdline) {
-    for (int i = 0; SKIP_PROCESS_NAMES[i] != NULL; i++) {
-        if (strstr(cmdline, SKIP_PROCESS_NAMES[i]) != NULL)
-            return true;
-    }
-    return false;
-}
+   if (!cmdline || !*cmdline)
+       return false;
 
-static void get_cmdline_from_pid(pid_t pid, char *cmdline, size_t cmdline_size) {
-    char path[64];
-    FILE *fp;
+   /* Check prefixes first */
+   for (int i = 0; SKIP_PROCESS_WITH_PREFIX[i] != NULL; i++) {
+       if (strncmp(cmdline, SKIP_PROCESS_WITH_PREFIX[i], strlen(SKIP_PROCESS_WITH_PREFIX[i])) == 0)
+           return true;
+   }
 
-    /* Read cmdline from /proc/[pid]/cmdline */
-    snprintf(path, sizeof(path), "/proc/%d/cmdline", pid);
-    fp = fopen(path, "r");
-    if (fp) {
-        size_t len = fread(cmdline, 1, cmdline_size - 1, fp);
-        fclose(fp);
+   /* Check exact matches */
+   for (int i = 0; SKIP_PROCESS_NAMES[i] != NULL; i++) {
+       const char* skip_name = SKIP_PROCESS_NAMES[i];
 
-        for (size_t i = 0; i < len; i++) {
-            if (cmdline[i] == '\0')
-                cmdline[i] = ' ';
-        }
+       /* For python programs, check the full command line */
+       if (strncmp(skip_name, "python3 ", 8) == 0) {
+           if (strncmp(cmdline, skip_name, strlen(skip_name)) == 0)
+               return true;
+       }
+       /* For other programs, check if cmdline starts with the skip_name */
+       else {
+           if (strncmp(cmdline, skip_name, strlen(skip_name)) == 0) {
+               /* Make sure it's followed by space, null, or we're at end of skip_name */
+               char next_char = cmdline[strlen(skip_name)];
+               if (next_char == '\0' || next_char == ' ')
+                   return true;
+           }
+       }
+   }
 
-        cmdline[len] = '\0';
-
-        if (len > 0 && cmdline[len - 1] == ' ')
-            cmdline[len - 1] = '\0';
-    } else {
-        snprintf(cmdline, cmdline_size, "<unknown>");
-    }
+   return false;
 }
 
 static void on_process_register(pid_t pid, uid_t uid, int oomadj, int pidfd) {
