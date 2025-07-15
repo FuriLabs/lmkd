@@ -69,11 +69,11 @@ static void *watchdog_main(void *param) {
 
     /* Try to ensure the thread uses performance cores */
     if (!set_thread_to_performance_cores(tid))
-        g_warning("Failed to assign performance cpuset to the watchdog thread");
+        g_debug("Failed to assign performance cpuset to the watchdog thread");
 
     /* Set high priority for watchdog thread */
     if (setpriority(PRIO_PROCESS, tid, -10))
-        g_warning("Unable to raise priority of watchdog thread (%d): errno=%d", tid, errno);
+        g_debug("Unable to raise priority of watchdog thread (%d): errno=%d", tid, errno);
 
     if (!watchdog->create_timer(sigset)) {
         g_printerr("Watchdog timer creation failed!");
