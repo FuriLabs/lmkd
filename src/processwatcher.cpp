@@ -49,7 +49,9 @@ static struct {
     bool initialized;
     uid_t system_uids[MAX_SYSTEM_USERS];
     int system_uid_count;
-} pw_state = {-1, {0, nullptr, nullptr, nullptr, false}, {0, nullptr}, false, {0}, 0};
+    enum memory_pressure_state current_state;
+    bool netlink_active;
+} pw_state = {-1, {0, nullptr, nullptr, nullptr, false}, {0, nullptr}, false, {0}, 0, MEMORY_STATE_NORMAL, false};
 
 static const char *system_users[] = {
     "dnsmasq",
@@ -284,6 +286,51 @@ void processwatcher_register_all_existing(void) {
     g_debug("Registered %d existing processes", count);
 }
 
+bool processwatcher_set_monitoring_state(enum memory_pressure_state state) {
+    if (!pw_state.initialized)
+        return false;
+
+    if (pw_state.current_state == state)
+        return true;
+
+    if (state == MEMORY_STATE_PRESSURE) {
+        if (!pw_state.netlink_active) {
+            /* Join the process events group */
+            int val = CN_IDX_PROC;
+            if (setsockopt(pw_state.netlink_sock, SOL_NETLINK, NETLINK_ADD_MEMBERSHIP, &val, sizeof(val)) < 0) {
+                g_printerr("Failed to join netlink group: %s", strerror(errno));
+                return false;
+            }
+
+            if (set_proc_ev_listen(pw_state.netlink_sock, 1) < 0)
+                return false;
+            pw_state.netlink_active = true;
+            g_debug("Enabled netlink process monitoring");
+        }
+        processwatcher_register_all_existing();
+    } else {
+        if (pw_state.netlink_active) {
+            if (set_proc_ev_listen(pw_state.netlink_sock, 0) < 0)
+                return false;
+
+            /* Leave the process events group */
+            int val = CN_IDX_PROC;
+            if (setsockopt(pw_state.netlink_sock, SOL_NETLINK, NETLINK_DROP_MEMBERSHIP, &val, sizeof(val)) < 0)
+                g_printerr("Failed to leave netlink group: %s", strerror(errno));
+
+            pw_state.netlink_active = false;
+            g_debug("Disabled netlink process monitoring");
+        }
+    }
+
+    pw_state.current_state = state;
+    return true;
+}
+
+enum memory_pressure_state processwatcher_get_monitoring_state(void) {
+    return pw_state.current_state;
+}
+
 bool processwatcher_init(const struct processwatcher_config *config) {
     struct sockaddr_nl addr;
     struct epoll_event epev;
@@ -322,17 +369,11 @@ bool processwatcher_init(const struct processwatcher_config *config) {
     memset(&addr, 0, sizeof(addr));
     addr.nl_family = AF_NETLINK;
     addr.nl_pid = getpid();
-    addr.nl_groups = CN_IDX_PROC;
+    /* Don't join any groups initially */
+    addr.nl_groups = 0;
 
     if (bind(pw_state.netlink_sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         g_printerr("Failed to bind netlink socket: %s", strerror(errno));
-        close(pw_state.netlink_sock);
-        pw_state.netlink_sock = -1;
-        return false;
-    }
-
-    /* Enable process event listening */
-    if (set_proc_ev_listen(pw_state.netlink_sock, 1) < 0) {
         close(pw_state.netlink_sock);
         pw_state.netlink_sock = -1;
         return false;
@@ -347,7 +388,6 @@ bool processwatcher_init(const struct processwatcher_config *config) {
 
         if (epoll_ctl(pw_state.config.epollfd, EPOLL_CTL_ADD, pw_state.netlink_sock, &epev) != 0) {
             g_printerr("Failed to add netlink socket to epoll: %s", strerror(errno));
-            set_proc_ev_listen(pw_state.netlink_sock, 0);
             close(pw_state.netlink_sock);
             pw_state.netlink_sock = -1;
             return false;
@@ -357,6 +397,8 @@ bool processwatcher_init(const struct processwatcher_config *config) {
     }
 
     pw_state.initialized = true;
+    pw_state.current_state = MEMORY_STATE_NORMAL;
+    pw_state.netlink_active = false;
 
     g_debug("Process watcher initialized successfully");
 
@@ -378,7 +420,8 @@ void processwatcher_cleanup(void) {
         }
 
         /* Disable process event listening */
-        set_proc_ev_listen(pw_state.netlink_sock, 0);
+        if (pw_state.netlink_active)
+            set_proc_ev_listen(pw_state.netlink_sock, 0);
 
         close(pw_state.netlink_sock);
         pw_state.netlink_sock = -1;
@@ -389,6 +432,8 @@ void processwatcher_cleanup(void) {
     pw_state.system_uid_count = 0;
     memset(pw_state.system_uids, 0, sizeof(pw_state.system_uids));
     pw_state.initialized = false;
+    pw_state.current_state = MEMORY_STATE_NORMAL;
+    pw_state.netlink_active = false;
 
     g_debug("Process watcher cleanup complete");
 }

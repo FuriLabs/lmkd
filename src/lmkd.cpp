@@ -1907,10 +1907,15 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
      */
     stop_wait_for_proc_kill(!kill_pending);
 
+    /* Enable process monitoring when memory pressure starts */
+    if (events && processwatcher_get_monitoring_state() == MEMORY_STATE_NORMAL)
+        processwatcher_set_monitoring_state(MEMORY_STATE_PRESSURE);
+
     if (vmstat_parse(&vs) < 0) {
         g_printerr("Failed to parse vmstat!");
         return;
     }
+
     /* Starting 5.9 kernel workingset_refault vmstat field was renamed workingset_refault_file */
     workingset_refault_file = vs.field.workingset_refault ?: vs.field.workingset_refault_file;
 
@@ -2814,8 +2819,6 @@ static bool init_process_registration(void) {
         return false;
     }
 
-    processwatcher_register_all_existing();
-
     g_debug("Process registration initialized successfully");
     return true;
 }
@@ -2992,6 +2995,21 @@ static void call_handler(struct event_handler_info *handler_info,
     watchdog.stop();
 }
 
+static void check_disable_netlink_monitoring(void) {
+    if (processwatcher_get_monitoring_state() != MEMORY_STATE_PRESSURE)
+        return;
+
+    /* Check if system is currently calm:
+     * - No active killing
+     * - No pending kills
+     * If calm, disable netlink monitoring */
+
+    if (!is_kill_pending() && !is_waiting_for_kill()) {
+        g_debug("30 seconds of calm detected, disabling netlink monitoring");
+        processwatcher_set_monitoring_state(MEMORY_STATE_NORMAL);
+    }
+}
+
 static void mainloop(void) {
     struct event_handler_info *handler_info;
     struct polling_params poll_params;
@@ -2999,6 +3017,7 @@ static void mainloop(void) {
     struct epoll_event *evt;
     long delay = -1;
     static int loop_count = 0;
+    static struct timespec last_netlink_check = {0, 0};
 
     poll_params.poll_handler = NULL;
     poll_params.paused_handler = NULL;
@@ -3128,11 +3147,20 @@ static void mainloop(void) {
             prev_update = poll_params.update;
         }
 
-        if (loop_count % 100 == 0 && !poll_params.poll_handler) {
+        /* Periodic netlink monitoring check (every 30 seconds) */
+        if (processwatcher_get_monitoring_state() == MEMORY_STATE_PRESSURE) {
+            clock_gettime(CLOCK_MONOTONIC_COARSE, &curr_tm);
+
+            if (get_time_diff_ms(&last_netlink_check, &curr_tm) > 30000) {
+                check_disable_netlink_monitoring();
+                last_netlink_check = curr_tm;
+            }
+        }
+
+        if (loop_count % 100 == 0 && !poll_params.poll_handler)
             g_debug("Status: idle, kill_pending=%s, maxevents=%d",
                     is_kill_pending() ? "yes" : "no",
                     maxevents);
-        }
     }
 }
 

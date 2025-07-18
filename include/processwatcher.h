@@ -38,6 +38,14 @@ struct processwatcher_config {
 };
 
 /**
+ * Memory pressure states for dynamic process monitoring
+ */
+enum memory_pressure_state {
+    MEMORY_STATE_NORMAL,    /* No memory pressure - netlink monitoring disabled */
+    MEMORY_STATE_PRESSURE,  /* Memory pressure detected - netlink monitoring active */
+};
+
+/**
  * Initialize the process watcher
  * @param config Configuration structure
  * @return true on success, false on failure
@@ -74,6 +82,19 @@ uid_t processwatcher_get_process_uid(pid_t pid);
  * @return true if initialized, false otherwise
  */
 bool processwatcher_is_initialized(void);
+
+/**
+* Set the memory pressure monitoring state
+* @param state MEMORY_STATE_NORMAL to disable monitoring, MEMORY_STATE_PRESSURE to enable
+* @return true on success, false on failure
+*/
+bool processwatcher_set_monitoring_state(enum memory_pressure_state state);
+
+/**
+* Get the current memory pressure monitoring state
+* @return Current monitoring state
+*/
+enum memory_pressure_state processwatcher_get_monitoring_state(void);
 
 #ifdef __cplusplus
 }
