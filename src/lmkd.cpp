@@ -102,9 +102,6 @@
 static GKeyFile *config = NULL;
 static bool config_loaded = false;
 
-static void mp_event_common(int data, uint32_t events, struct polling_params *poll_params);
-static void proc_slot(struct proc *procp);
-
 static void load_config(void) {
     if (config_loaded)
         return;
@@ -694,10 +691,6 @@ static uint32_t killcnt_total = 0;
 
 /* PAGE_SIZE / 1024 */
 static long page_k;
-
-static void update_props();
-static bool init_monitors();
-static void destroy_monitors();
 
 static int clamp(int low, int high, int value) {
     return std::max(std::min(value, high), low);
@@ -2157,33 +2150,6 @@ no_kill:
         poll_params->polling_interval_ms = PSI_POLL_PERIOD_LONG_MS;
 }
 
-static bool init_mp_psi(enum vmpressure_level level, bool use_new_strategy) {
-    int fd;
-
-    /* Do not register a handler if threshold_ms is not set */
-    if (!psi_thresholds[level].threshold_ms)
-        return true;
-
-    fd = init_psi_monitor(psi_thresholds[level].stall_type,
-                          psi_thresholds[level].threshold_ms * US_PER_MS,
-                          PSI_WINDOW_SIZE_MS * US_PER_MS);
-
-    if (fd < 0)
-        return false;
-
-    vmpressure_hinfo[level].handler = use_new_strategy ? mp_event_psi : mp_event_common;
-    vmpressure_hinfo[level].data = level;
-    vmpressure_hinfo[level].bypass_call_handler = false;
-    if (register_psi_monitor(epollfd, fd, &vmpressure_hinfo[level]) < 0) {
-        destroy_psi_monitor(fd);
-        return false;
-    }
-    maxevents++;
-    mpevfd[level] = fd;
-
-    return true;
-}
-
 static void destroy_mp_psi(enum vmpressure_level level) {
     int fd = mpevfd[level];
 
@@ -2226,134 +2192,6 @@ static MemcgVersion memcg_version() {
     static MemcgVersion version = __memcg_version();
 
     return version;
-}
-
-static bool init_psi_monitors() {
-    /*
-     * When PSI is used on low-ram devices or on high-end devices without memfree levels
-     * use new kill strategy based on zone watermarks, free swap and thrashing stats.
-     * Also use the new strategy if memcg has not been mounted in the v1 cgroups hiearchy since
-     * the old strategy relies on memcg attributes that are available only in the v1 cgroups
-     * hiearchy.
-     */
-    bool use_new_strategy =
-        get_config_bool("use_new_strategy", low_ram_device || !use_minfree_levels);
-    if (!use_new_strategy && memcg_version() != MemcgVersion::kV1) {
-        g_printerr("Old kill strategy can only be used with v1 cgroup hierarchy");
-        return false;
-    }
-    /* In default PSI mode override stall amounts using system properties */
-    if (use_new_strategy) {
-        /* Do not use low pressure level */
-        psi_thresholds[VMPRESS_LEVEL_LOW].threshold_ms = 0;
-        psi_thresholds[VMPRESS_LEVEL_MEDIUM].threshold_ms = psi_partial_stall_ms;
-        psi_thresholds[VMPRESS_LEVEL_CRITICAL].threshold_ms = psi_complete_stall_ms;
-    }
-
-    if (!init_mp_psi(VMPRESS_LEVEL_LOW, use_new_strategy))
-        return false;
-
-    if (!init_mp_psi(VMPRESS_LEVEL_MEDIUM, use_new_strategy)) {
-        destroy_mp_psi(VMPRESS_LEVEL_LOW);
-        return false;
-    }
-    if (!init_mp_psi(VMPRESS_LEVEL_CRITICAL, use_new_strategy)) {
-        destroy_mp_psi(VMPRESS_LEVEL_MEDIUM);
-        destroy_mp_psi(VMPRESS_LEVEL_LOW);
-        return false;
-    }
-    return true;
-}
-
-static bool init_mp_common(enum vmpressure_level level) {
-    /* The implementation of this function relies on memcg statistics that are only available in the
-     * v1 cgroup hierarchy. */
-    if (memcg_version() != MemcgVersion::kV1) {
-        g_printerr("%s: global monitoring is only available for the v1 cgroup hierarchy", __func__);
-        return false;
-    }
-
-    int mpfd;
-    int evfd;
-    int evctlfd;
-    char buf[256];
-    struct epoll_event epev;
-    int ret;
-    int level_idx = (int)level;
-    const char *levelstr = level_name[level_idx];
-
-    std::string mempress_path, evcontrol_path;
-
-    if (!get_cgroup_attribute_path("memory.pressure_level", mempress_path)) {
-        g_debug("No kernel memory.pressure_level support");
-        return false;
-    }
-
-    if (!get_cgroup_attribute_path("cgroup.event_control", evcontrol_path)) {
-        g_debug("No kernel memory cgroup event control");
-        return false;
-    }
-
-    /* gid containing AID_SYSTEM required */
-    mpfd = open(mempress_path.c_str(), O_RDONLY | O_CLOEXEC);
-    if (mpfd < 0) {
-        g_debug("No kernel memory.pressure_level support (errno=%d)", errno);
-        return false;
-    }
-
-    evctlfd = open(evcontrol_path.c_str(), O_WRONLY | O_CLOEXEC);
-    if (evctlfd < 0) {
-        g_debug("No kernel memory cgroup event control (errno=%d)", errno);
-        close(mpfd);
-        return false;
-    }
-
-    evfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-    if (evfd < 0) {
-        g_printerr("eventfd failed for level %s; errno=%d", levelstr, errno);
-        close(evctlfd);
-        close(mpfd);
-        return false;
-    }
-
-    ret = snprintf(buf, sizeof(buf), "%d %d %s", evfd, mpfd, levelstr);
-    if (ret >= (ssize_t)sizeof(buf)) {
-        g_printerr("cgroup.event_control line overflow for level %s", levelstr);
-        close(evfd);
-        close(evctlfd);
-        close(mpfd);
-        return false;
-    }
-
-    ret = TEMP_FAILURE_RETRY(write(evctlfd, buf, strlen(buf) + 1));
-    if (ret == -1) {
-        g_printerr("cgroup.event_control write failed for level %s; errno=%d",
-                   levelstr,
-                   errno);
-        close(evfd);
-        close(evctlfd);
-        close(mpfd);
-        return false;
-    }
-
-    epev.events = EPOLLIN;
-    /* use data to store event level */
-    vmpressure_hinfo[level_idx].data = level_idx;
-    vmpressure_hinfo[level_idx].handler = mp_event_common;
-    epev.data.ptr = (void *)&vmpressure_hinfo[level_idx];
-    ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, evfd, &epev);
-    if (ret == -1) {
-        g_printerr("epoll_ctl for level %s failed; errno=%d", levelstr, errno);
-        close(evfd);
-        close(evctlfd);
-        close(mpfd);
-        return false;
-    }
-    maxevents++;
-    mpevfd[level] = evfd;
-    close(evctlfd);
-    close(mpfd);
-    return true;
 }
 
 static void destroy_mp_common(enum vmpressure_level level) {
@@ -2601,6 +2439,161 @@ do_kill:
     if (is_waiting_for_kill())
         /* pause polling if we are waiting for process death notification */
         poll_params->update = POLLING_PAUSE;
+}
+
+static bool init_mp_psi(enum vmpressure_level level, bool use_new_strategy) {
+    int fd;
+
+    /* Do not register a handler if threshold_ms is not set */
+    if (!psi_thresholds[level].threshold_ms)
+        return true;
+
+    fd = init_psi_monitor(psi_thresholds[level].stall_type,
+                          psi_thresholds[level].threshold_ms * US_PER_MS,
+                          PSI_WINDOW_SIZE_MS * US_PER_MS);
+
+    if (fd < 0)
+        return false;
+
+    vmpressure_hinfo[level].handler = use_new_strategy ? mp_event_psi : mp_event_common;
+    vmpressure_hinfo[level].data = level;
+    vmpressure_hinfo[level].bypass_call_handler = false;
+    if (register_psi_monitor(epollfd, fd, &vmpressure_hinfo[level]) < 0) {
+        destroy_psi_monitor(fd);
+        return false;
+    }
+    maxevents++;
+    mpevfd[level] = fd;
+
+    return true;
+}
+
+static bool init_mp_common(enum vmpressure_level level) {
+    /* The implementation of this function relies on memcg statistics that are only available in the
+     * v1 cgroup hierarchy. */
+    if (memcg_version() != MemcgVersion::kV1) {
+        g_printerr("%s: global monitoring is only available for the v1 cgroup hierarchy", __func__);
+        return false;
+    }
+
+    int mpfd;
+    int evfd;
+    int evctlfd;
+    char buf[256];
+    struct epoll_event epev;
+    int ret;
+    int level_idx = (int)level;
+    const char *levelstr = level_name[level_idx];
+
+    std::string mempress_path, evcontrol_path;
+
+    if (!get_cgroup_attribute_path("memory.pressure_level", mempress_path)) {
+        g_debug("No kernel memory.pressure_level support");
+        return false;
+    }
+
+    if (!get_cgroup_attribute_path("cgroup.event_control", evcontrol_path)) {
+        g_debug("No kernel memory cgroup event control");
+        return false;
+    }
+
+    /* gid containing AID_SYSTEM required */
+    mpfd = open(mempress_path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (mpfd < 0) {
+        g_debug("No kernel memory.pressure_level support (errno=%d)", errno);
+        return false;
+    }
+
+    evctlfd = open(evcontrol_path.c_str(), O_WRONLY | O_CLOEXEC);
+    if (evctlfd < 0) {
+        g_debug("No kernel memory cgroup event control (errno=%d)", errno);
+        close(mpfd);
+        return false;
+    }
+
+    evfd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
+    if (evfd < 0) {
+        g_printerr("eventfd failed for level %s; errno=%d", levelstr, errno);
+        close(evctlfd);
+        close(mpfd);
+        return false;
+    }
+
+    ret = snprintf(buf, sizeof(buf), "%d %d %s", evfd, mpfd, levelstr);
+    if (ret >= (ssize_t)sizeof(buf)) {
+        g_printerr("cgroup.event_control line overflow for level %s", levelstr);
+        close(evfd);
+        close(evctlfd);
+        close(mpfd);
+        return false;
+    }
+
+    ret = TEMP_FAILURE_RETRY(write(evctlfd, buf, strlen(buf) + 1));
+    if (ret == -1) {
+        g_printerr("cgroup.event_control write failed for level %s; errno=%d",
+                   levelstr,
+                   errno);
+        close(evfd);
+        close(evctlfd);
+        close(mpfd);
+        return false;
+    }
+
+    epev.events = EPOLLIN;
+    /* use data to store event level */
+    vmpressure_hinfo[level_idx].data = level_idx;
+    vmpressure_hinfo[level_idx].handler = mp_event_common;
+    epev.data.ptr = (void *)&vmpressure_hinfo[level_idx];
+    ret = epoll_ctl(epollfd, EPOLL_CTL_ADD, evfd, &epev);
+    if (ret == -1) {
+        g_printerr("epoll_ctl for level %s failed; errno=%d", levelstr, errno);
+        close(evfd);
+        close(evctlfd);
+        close(mpfd);
+        return false;
+    }
+    maxevents++;
+    mpevfd[level] = evfd;
+    close(evctlfd);
+    close(mpfd);
+    return true;
+}
+
+static bool init_psi_monitors() {
+    /*
+     * When PSI is used on low-ram devices or on high-end devices without memfree levels
+     * use new kill strategy based on zone watermarks, free swap and thrashing stats.
+     * Also use the new strategy if memcg has not been mounted in the v1 cgroups hiearchy since
+     * the old strategy relies on memcg attributes that are available only in the v1 cgroups
+     * hiearchy.
+     */
+    bool use_new_strategy =
+        get_config_bool("use_new_strategy", low_ram_device || !use_minfree_levels);
+    if (!use_new_strategy && memcg_version() != MemcgVersion::kV1) {
+        g_printerr("Old kill strategy can only be used with v1 cgroup hierarchy");
+        return false;
+    }
+    /* In default PSI mode override stall amounts using system properties */
+    if (use_new_strategy) {
+        /* Do not use low pressure level */
+        psi_thresholds[VMPRESS_LEVEL_LOW].threshold_ms = 0;
+        psi_thresholds[VMPRESS_LEVEL_MEDIUM].threshold_ms = psi_partial_stall_ms;
+        psi_thresholds[VMPRESS_LEVEL_CRITICAL].threshold_ms = psi_complete_stall_ms;
+    }
+
+    if (!init_mp_psi(VMPRESS_LEVEL_LOW, use_new_strategy))
+        return false;
+
+    if (!init_mp_psi(VMPRESS_LEVEL_MEDIUM, use_new_strategy)) {
+        destroy_mp_psi(VMPRESS_LEVEL_LOW);
+        return false;
+    }
+    if (!init_mp_psi(VMPRESS_LEVEL_CRITICAL, use_new_strategy)) {
+        destroy_mp_psi(VMPRESS_LEVEL_MEDIUM);
+        destroy_mp_psi(VMPRESS_LEVEL_LOW);
+        return false;
+    }
+    return true;
 }
 
 static bool init_monitors() {
