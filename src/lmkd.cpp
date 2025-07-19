@@ -437,6 +437,7 @@ static const char* const SKIP_PROCESS_NAMES[] = {
    "/usr/libexec/evolution-data-server/evolution-alarm-notify",
    "/usr/bin/gnome-clocks",
    "python3 /usr/bin/andromeda",
+   "/usr/bin/python3 /usr/bin/andromeda",
    /* Andromeda */
    "com.android.providers.media.module",
    "com.android.nfc",
