@@ -3197,6 +3197,29 @@ static void update_props() {
     swap_util_max = clamp(0, 100, get_config_int32("swap_util_max", 100));
     filecache_min_kb = get_config_int64("filecache_min_kb", 0);
     stall_limit_critical = get_config_int64("stall_limit_critical", 100);
+
+    /* Debug output for all loaded configuration values */
+    g_debug("Configuration loaded:");
+    g_debug("  level_oomadj[LOW]: %d", level_oomadj[VMPRESS_LEVEL_LOW]);
+    g_debug("  level_oomadj[MEDIUM]: %d", level_oomadj[VMPRESS_LEVEL_MEDIUM]);
+    g_debug("  level_oomadj[CRITICAL]: %d", level_oomadj[VMPRESS_LEVEL_CRITICAL]);
+    g_debug("  enable_pressure_upgrade: %s", enable_pressure_upgrade ? "true" : "false");
+    g_debug("  upgrade_pressure: %" PRId64, upgrade_pressure);
+    g_debug("  downgrade_pressure: %" PRId64, downgrade_pressure);
+    g_debug("  kill_heaviest_task: %s", kill_heaviest_task ? "true" : "false");
+    g_debug("  low_ram_device: %s", low_ram_device ? "true" : "false");
+    g_debug("  kill_timeout_ms: %lu", kill_timeout_ms);
+    g_debug("  use_minfree_levels: %s", use_minfree_levels ? "true" : "false");
+    g_debug("  per_app_memcg: %s", per_app_memcg ? "true" : "false");
+    g_debug("  swap_free_low_percentage: %d", swap_free_low_percentage);
+    g_debug("  psi_partial_stall_ms: %d", psi_partial_stall_ms);
+    g_debug("  psi_complete_stall_ms: %d", psi_complete_stall_ms);
+    g_debug("  thrashing_limit_pct: %d", thrashing_limit_pct);
+    g_debug("  thrashing_limit_decay_pct: %d", thrashing_limit_decay_pct);
+    g_debug("  thrashing_critical_pct: %d", thrashing_critical_pct);
+    g_debug("  swap_util_max: %d", swap_util_max);
+    g_debug("  filecache_min_kb: %" PRId64, filecache_min_kb);
+    g_debug("  stall_limit_critical: %" PRId64, stall_limit_critical);
 }
 
 int main(int argc __unused, char **argv __unused) {
