@@ -8,9 +8,6 @@ Restart=always
 RestartSec=1
 User=root
 Group=root
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=lmkd
 
 [Install]
 WantedBy=multi-user.target
