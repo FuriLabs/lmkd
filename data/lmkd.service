@@ -1,7 +1,5 @@
 [Unit]
 Description=Low Memory Killer Daemon
-After=multi-user.target
-Wants=multi-user.target
 
 [Service]
 Type=simple
@@ -10,9 +8,6 @@ Restart=always
 RestartSec=1
 User=root
 Group=root
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=lmkd
 
 [Install]
 WantedBy=multi-user.target
