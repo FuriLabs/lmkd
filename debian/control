@@ -1,0 +1,17 @@
+Source: lmkd
+Maintainer: Bardia Moshiri <bardia@furilabs.com>
+Section: libs
+Priority: optional
+Build-Depends: debhelper-compat (= 13),
+               gcc,
+               make,
+               libglib2.0-dev,
+Standards-Version: 4.7.2
+Vcs-Browser: https://github.com/furilabs/lmkd
+Vcs-Git: https://github.com/furilabs/lmkd.git
+
+Package: lmkd
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends},
+Description: Low Memory Killer Daemon
+ Low Memory Killer Daemon for FuriOS
