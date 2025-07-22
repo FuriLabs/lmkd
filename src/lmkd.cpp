@@ -109,8 +109,11 @@ static void load_config(void) {
     config = g_key_file_new();
     GError *error = NULL;
 
-    /* Try /usr/share/lmkd/lmkd.conf first, then /etc/lmkd.conf */
+    /* Try port specific configuration first (/usr/lib/furios/device/lmkd.conf)
+     * then default configuration (/usr/share/lmkd/lmkd.conf)
+     * and user configuration (/etc/lmkd.conf) */
     const char *config_paths[] = {
+        "/usr/lib/furios/device/lmkd.conf",
         "/usr/share/lmkd/lmkd.conf",
         "/etc/lmkd.conf",
         NULL
