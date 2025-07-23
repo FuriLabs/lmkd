@@ -1,8 +1,8 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -fPIC
 
-GLIB_CFLAGS = $(shell pkg-config --cflags glib-2.0)
-GLIB_LIBS = $(shell pkg-config --libs glib-2.0)
+GLIB_CFLAGS = $(shell pkg-config --cflags glib-2.0 gio-2.0)
+GLIB_LIBS = $(shell pkg-config --libs glib-2.0 gio-2.0)
 
 SRCDIR = src
 INCDIR = include
@@ -16,7 +16,8 @@ INCLUDES = -I$(INCDIR) -I$(LIBPSI_INCDIR) $(GLIB_CFLAGS)
 LMKD_SOURCES = $(SRCDIR)/lmkd.cpp \
                $(SRCDIR)/reaper.cpp \
                $(SRCDIR)/watchdog.cpp \
-               $(SRCDIR)/processwatcher.cpp
+               $(SRCDIR)/processwatcher.cpp \
+               $(SRCDIR)/dbus.cpp
 
 PSI_SOURCES = $(LIBPSI_DIR)/psi.cpp
 
@@ -26,6 +27,8 @@ PSI_OBJECTS = $(PSI_SOURCES:%.cpp=$(BUILDDIR)/%.o)
 OBJECTS = $(LMKD_OBJECTS) $(PSI_OBJECTS)
 
 TARGET = lmkd
+
+PREFIX ?= /usr
 
 all: $(TARGET)
 
@@ -40,17 +43,23 @@ $(BUILDDIR)/%.o: %.cpp | $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
 install: $(TARGET)
-	install -d $(DESTDIR)/usr/sbin
-	install -d $(DESTDIR)/usr/share/lmkd
-	install -d $(DESTDIR)/lib/systemd/system
-	install -m 755 $(TARGET) $(DESTDIR)/usr/sbin/
-	install -m 644 $(DATADIR)/lmkd.conf $(DESTDIR)/usr/share/lmkd/
-	install -m 644 $(DATADIR)/lmkd.service $(DESTDIR)/lib/systemd/system/
+	install -d $(DESTDIR)$(PREFIX)/sbin
+	install -d $(DESTDIR)$(PREFIX)/share/lmkd
+	install -d $(DESTDIR)$(PREFIX)/lib/systemd/system
+	install -m 755 $(TARGET) $(DESTDIR)$(PREFIX)/sbin/
+	install -m 644 $(DATADIR)/lmkd.conf $(DESTDIR)$(PREFIX)/share/lmkd/
+	install -m 644 $(DATADIR)/lmkd.service $(DESTDIR)$(PREFIX)/lib/systemd/system/
+	install -d $(DESTDIR)$(PREFIX)/share/dbus-1/system-services
+	install -m 0644 data/io.furios.Lmkd.service $(DESTDIR)$(PREFIX)/share/dbus-1/system-services/
+	install -d $(DESTDIR)$(PREFIX)/share/dbus-1/system.d
+	install -m 0644 data/io.furios.Lmkd.conf $(DESTDIR)$(PREFIX)/share/dbus-1/system.d/
 
 uninstall:
-	rm -f $(DESTDIR)/usr/sbin/lmkd
-	rm -rf $(DESTDIR)/usr/share/lmkd
-	rm -f $(DESTDIR)/lib/systemd/system/lmkd.service
+	rm -f $(DESTDIR)$(PREFIX)/sbin/lmkd
+	rm -rf $(DESTDIR)$(PREFIX)/share/lmkd
+	rm -f $(DESTDIR)$(PREFIX)/lib/systemd/system/lmkd.service
+	rm -f $(DESTDIR)$(PREFIX)/share/dbus-1/system-services/io.furios.Lmkd.service
+	rm -f $(DESTDIR)$(PREFIX)/share/dbus-1/system.d/io.furios.Lmkd.conf
 
 clean:
 	rm -rf $(BUILDDIR)

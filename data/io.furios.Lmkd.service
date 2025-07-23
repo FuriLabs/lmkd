@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=io.furios.Lmkd
+Exec=/usr/sbin/lmkd
+User=root
+SystemdService=lmkd.service

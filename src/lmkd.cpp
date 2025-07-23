@@ -33,6 +33,7 @@
 #include "processwatcher.h"
 #include "reaper.h"
 #include "watchdog.h"
+#include "dbus.h"
 
 #ifndef __unused
 #define __unused __attribute__((__unused__))
@@ -692,6 +693,8 @@ static uint8_t killcnt_idx[ADJTOSLOT_COUNT];
 static uint16_t killcnt[MAX_DISTINCT_OOM_ADJ];
 static int killcnt_free_idx = 0;
 static uint32_t killcnt_total = 0;
+
+static LmkdDBusService dbus_service = {0};
 
 /* PAGE_SIZE / 1024 */
 static long page_k;
@@ -1685,6 +1688,26 @@ static int kill_one_process(struct proc *procp, int min_oom_score, struct kill_i
                 mi->field.nr_free_pages * page_k,
                 mi->field.free_swap * page_k);
 
+    if (g_lmkd_dbus_service && g_lmkd_dbus_service->connection) {
+        int32_t thrashing_val = ki ? ki->thrashing : -1;
+        int32_t max_thrashing_val = ki ? ki->max_thrashing : -1;
+        int64_t free_mem_kb = mi->field.nr_free_pages * page_k;
+        int64_t free_swap_kb = mi->field.free_swap * page_k;
+
+        lmkd_dbus_emit_process_killed(g_lmkd_dbus_service,
+                                      pid,
+                                      uid,
+                                      procp->oomadj,
+                                      taskname,
+                                      ki ? ki->kill_desc : "low memory",
+                                      rss_kb,
+                                      swap_kb,
+                                      thrashing_val,
+                                      max_thrashing_val,
+                                      free_mem_kb,
+                                      free_swap_kb);
+    }
+
     result = rss_kb / page_k;
 
 out:
@@ -1843,6 +1866,17 @@ static int calc_swap_utilization(union meminfo *mi) {
     return total_swappable > 0 ? (swap_used * 100) / total_swappable : 0;
 }
 
+static enum dbus_pressure_state memory_state_to_dbus_state(enum memory_pressure_state state) {
+    switch (state) {
+        case MEMORY_STATE_NORMAL:
+            return DBUS_PRESSURE_STATE_NORMAL;
+        case MEMORY_STATE_PRESSURE:
+            return DBUS_PRESSURE_STATE_PRESSURE;
+        default:
+            return DBUS_PRESSURE_STATE_NORMAL;
+    }
+}
+
 static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_params) {
     enum reclaim_state {
         NO_RECLAIM = 0,
@@ -1905,8 +1939,19 @@ static void mp_event_psi(int data, uint32_t events, struct polling_params *poll_
     stop_wait_for_proc_kill(!kill_pending);
 
     /* Enable process monitoring when memory pressure starts */
-    if (events && processwatcher_get_monitoring_state() == MEMORY_STATE_NORMAL)
+    if (events && processwatcher_get_monitoring_state() == MEMORY_STATE_NORMAL) {
+        enum memory_pressure_state old_state = MEMORY_STATE_NORMAL;
+        enum memory_pressure_state new_state = MEMORY_STATE_PRESSURE;
+
+        g_debug("Memory pressure detected, enabling process monitoring");
+
+        if (g_lmkd_dbus_service && g_lmkd_dbus_service->connection)
+            lmkd_dbus_emit_pressure_state_changed(g_lmkd_dbus_service,
+                                                  memory_state_to_dbus_state(old_state),
+                                                  memory_state_to_dbus_state(new_state));
+
         processwatcher_set_monitoring_state(MEMORY_STATE_PRESSURE);
+    }
 
     if (vmstat_parse(&vs) < 0) {
         g_printerr("Failed to parse vmstat!");
@@ -2234,6 +2279,21 @@ static void mp_event_common(int data, uint32_t events, struct polling_params *po
     static bool paths_initialized = false;
 
     g_debug("%s memory pressure event is triggered", level_name[level]);
+
+    /* Enable process monitoring when memory pressure starts */
+    if (events && processwatcher_get_monitoring_state() == MEMORY_STATE_NORMAL) {
+        enum memory_pressure_state old_state = MEMORY_STATE_NORMAL;
+        enum memory_pressure_state new_state = MEMORY_STATE_PRESSURE;
+
+        g_debug("Memory pressure detected, enabling process monitoring");
+
+        if (g_lmkd_dbus_service && g_lmkd_dbus_service->connection)
+            lmkd_dbus_emit_pressure_state_changed(g_lmkd_dbus_service,
+                                                  memory_state_to_dbus_state(old_state),
+                                                  memory_state_to_dbus_state(new_state));
+
+        processwatcher_set_monitoring_state(MEMORY_STATE_PRESSURE);
+    }
 
     if (!use_psi_monitors) {
         /*
@@ -2897,6 +2957,16 @@ static int init(void) {
     }
     g_debug("Process polling is %s", pidfd_supported ? "supported" : "not supported");
 
+    g_lmkd_dbus_service = &dbus_service;
+    GError *dbus_error = NULL;
+    if (!lmkd_dbus_service_init(&dbus_service, &dbus_error)) {
+        g_warning("Failed to initialize D-Bus service: %s", dbus_error->message);
+        g_error_free(dbus_error);
+        g_lmkd_dbus_service = NULL;
+    } else {
+        g_debug("D-Bus service initialized successfully");
+    }
+
     return 0;
 }
 
@@ -3002,7 +3072,16 @@ static void check_disable_netlink_monitoring(void) {
      * If calm, disable netlink monitoring */
 
     if (!is_kill_pending() && !is_waiting_for_kill()) {
+        enum memory_pressure_state old_state = MEMORY_STATE_PRESSURE;
+        enum memory_pressure_state new_state = MEMORY_STATE_NORMAL;
+
         g_debug("30 seconds of calm detected, disabling netlink monitoring");
+
+        if (g_lmkd_dbus_service && g_lmkd_dbus_service->connection)
+            lmkd_dbus_emit_pressure_state_changed(g_lmkd_dbus_service,
+                                                  memory_state_to_dbus_state(old_state),
+                                                  memory_state_to_dbus_state(new_state));
+
         processwatcher_set_monitoring_state(MEMORY_STATE_NORMAL);
     }
 }
@@ -3278,6 +3357,11 @@ int main(int argc __unused, char **argv __unused) {
 
     if (config)
         g_key_file_free(config);
+
+    if (g_lmkd_dbus_service) {
+        lmkd_dbus_service_cleanup(g_lmkd_dbus_service);
+        g_lmkd_dbus_service = NULL;
+    }
 
     destroy_monitors();
     cleanup_process_registration();
