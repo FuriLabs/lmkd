@@ -35,73 +35,248 @@
 #include "watchdog.h"
 #include "dbus.h"
 
-#ifndef __unused
-#define __unused __attribute__((__unused__))
-#endif
+/* Configuration system */
+GKeyFile *config = NULL;
+bool config_loaded = false;
 
-#define ZONEINFO_PATH "/proc/zoneinfo"
-#define MEMINFO_PATH "/proc/meminfo"
-#define VMSTAT_PATH "/proc/vmstat"
-#define PROC_STATUS_TGID_FIELD "Tgid:"
-#define PROC_STATUS_RSS_FIELD "VmRSS:"
-#define PROC_STATUS_SWAP_FIELD "VmSwap:"
+const char *const level_name[VMPRESS_LEVEL_COUNT] = {
+    "low",
+    "medium",
+    "critical"
+};
 
-#define PERCEPTIBLE_APP_ADJ 200
+struct low_pressure_mem low_pressure_mem = {-1, -1};
 
-#define EIGHT_MEGA (1 << 23)
+int level_oomadj[VMPRESS_LEVEL_COUNT];
+int mpevfd[VMPRESS_LEVEL_COUNT] = {-1, -1, -1};
+bool pidfd_supported;
+int last_kill_pid_or_fd = -1;
+struct timespec last_kill_tm;
 
-#define TARGET_UPDATE_MIN_INTERVAL_MS 1000
-#define THRASHING_RESET_INTERVAL_MS 1000
+/* lmkd configurable parameters */
+bool enable_pressure_upgrade;
+int64_t upgrade_pressure;
+int64_t downgrade_pressure;
+bool low_ram_device;
+bool kill_heaviest_task;
+unsigned long kill_timeout_ms;
+bool use_minfree_levels;
+bool per_app_memcg;
+int swap_free_low_percentage;
+int psi_partial_stall_ms;
+int psi_complete_stall_ms;
+int thrashing_limit_pct;
+int thrashing_limit_decay_pct;
+int thrashing_critical_pct;
+int swap_util_max;
+int64_t filecache_min_kb;
+int64_t stall_limit_critical;
+bool use_psi_monitors = false;
+struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
+    {PSI_SOME, 70},  /* 70ms out of 1sec for partial stall */
+    {PSI_SOME, 100}, /* 100ms out of 1sec for partial stall */
+    {PSI_FULL, 70},  /* 70ms out of 1sec for complete stall */
+};
 
-#define NS_PER_SEC 1000000000LL
-#define MS_PER_SEC 1000LL
-#define US_PER_SEC 1000000LL
-#define NS_PER_MS (NS_PER_SEC / MS_PER_SEC)
-#define US_PER_MS (US_PER_SEC / MS_PER_SEC)
+Reaper reaper;
+int reaper_comm_fd[2];
 
-#define SYSTEM_ADJ (-900)
+/* vmpressure event handler data */
+struct event_handler_info vmpressure_hinfo[VMPRESS_LEVEL_COUNT];
 
-#define STRINGIFY(x) STRINGIFY_INTERNAL(x)
-#define STRINGIFY_INTERNAL(x) #x
+int epollfd;
+int maxevents;
 
-/* Get PAGE_SIZE */
-#ifndef PAGE_SIZE
-#define PAGE_SIZE 4096
-#endif
+int lowmem_adj[MAX_TARGETS];
+int lowmem_minfree[MAX_TARGETS];
+int lowmem_targets_size;
+
+const char *const zoneinfo_zone_field_names[ZI_ZONE_FIELD_COUNT] = {
+    "nr_free_pages",
+    "min",
+    "low",
+    "high",
+    "present",
+    "nr_free_cma",
+};
+
+const char *const zoneinfo_zone_spec_field_names[ZI_ZONE_SPEC_FIELD_COUNT] = {
+    "protection:",
+    "pagesets",
+};
+
+/* List of process names to skip during registration */
+const char* const SKIP_PROCESS_NAMES[] = {
+   "<unknown>",
+   "/usr/libexec/xdg-permission-store",
+   "/usr/libexec/flashlightd",
+   "/usr/libexec/localsearch-3",
+   "/usr/libexec/xdg-desktop-portal-gtk",
+   "/usr/libexec/gsd-printer",
+   "/usr/libexec/evolution-calendar-factory",
+   "/usr/libexec/xdg-desktop-portal-gnome",
+   "/usr/libexec/flatpak-session-helper",
+   "/usr/bin/callaudiod",
+   "/usr/libexec/feedbackd",
+   "/usr/libexec/evolution-source-registry",
+   "/usr/libexec/at-spi-bus-launcher",
+   "/usr/libexec/gsd-adapter",
+   "/usr/libexec/phosh",
+   "/usr/bin/dbus-daemon",
+   "/usr/libexec/pqdbus",
+   "/usr/libexec/gvfsd",
+   "/usr/libexec/dconf-service",
+   "python3 /usr/bin/mmsd",
+   "/usr/bin/gnome-keyring-daemon",
+   "/usr/libexec/gnome-session-binary",
+   "/usr/libexec/android-vibrator",
+   "/usr/libexec/assistant-button",
+   "/usr/libexec/biomd-session",
+   "python3 /usr/libexec/furios-gallery-daemon",
+   "/usr/libexec/gcr-ssh-agent",
+   "/usr/libexec/gesture-sensors",
+   "/usr/libexec/gnome-session-ctl",
+   "/usr/libexec/bluetooth/obexd",
+   "/usr/bin/phoc",
+   "(sd-pam)",
+   "/usr/bin/mpris-proxy",
+   "/usr/bin/pipewire",
+   "/usr/bin/pulseaudio",
+   "media.swcodec",
+   "media.codec",
+   "media.extractor",
+   "media.metrics",
+   "/usr/lib/systemd/systemd",
+   "/usr/sbin/vnstatd",
+   "/usr/libexec/goa-daemon",
+   "/usr/libexec/goa-identity-service",
+   "/usr/libexec/evolution-addressbook-factory",
+   "/usr/libexec/at-spi2-registryd",
+   "/usr/libexec/gvfs-udisks2-volume-monitor",
+   "/usr/libexec/gvfs-goa-volume-monitor",
+   "/usr/libexec/gvfs-afc-volume-monitor",
+   "/usr/libexec/gvfs-mtp-volume-monitor",
+   "/usr/libexec/gvfs-gphoto2-volume-monitor",
+   "/usr/bin/gnome-calls",
+   "/usr/libexec/gsd-a11y-settings",
+   "/usr/libexec/gsd-color",
+   "/usr/libexec/gsd-datetime",
+   "/usr/libexec/gsd-housekeeping",
+   "/usr/libexec/gsd-keyboard",
+   "/usr/libexec/gsd-media-keys",
+   "/usr/libexec/gsd-power",
+   "/usr/libexec/gsd-print-notifications",
+   "/usr/libexec/gsd-rfkill",
+   "/usr/libexec/gsd-screensaver-proxy",
+   "/usr/libexec/gsd-sharing",
+   "/usr/libexec/gsd-smartcard",
+   "/usr/libexec/gsd-sound",
+   "/usr/libexec/gsd-usb-protection",
+   "/usr/libexec/gsd-wacom",
+   "/usr/libexec/gsd-wwan",
+   "/usr/bin/phosh-osk-stub",
+   "/usr/bin/chatty",
+   "/usr/libexec/xdg-desktop-portal",
+   "/usr/libexec/evolution-alarm-notify",
+   "dbus-monitor",
+   "/usr/libexec/xdg-desktop-portal-phosh",
+   "/usr/libexec/gvfsd-metadata",
+   "/usr/libexec/gvfsd-recent",
+   "/usr/libexec/gvfsd-trash",
+   "/usr/libexec/evolution-data-server/evolution-alarm-notify",
+   "/usr/bin/gnome-clocks",
+   "python3 /usr/bin/andromeda",
+   "/usr/bin/python3 /usr/bin/andromeda",
+   /* Andromeda */
+   "com.android.providers.media.module",
+   "com.android.nfc",
+   "io.furios.launcher",
+   "android.process.acore",
+   "io.furios.launcher:minimal",
+   "com.google.android.gms",
+   "com.android.permissioncontroller",
+   "com.android.systemui",
+   "com.android.networkstack.process",
+   "android.ext.services",
+   "webview_zygote",
+   "com.android.smspush",
+   "com.android.cellbroadcastreceiver.module",
+   "com.android.dialer",
+   "com.android.inputmethod.latin",
+   "com.android.messaging",
+   "com.android.externalstorage",
+   "android.process.media",
+   NULL  /* Sentinel value */
+};
+
+/* List of process prefixes to skip during registration */
+const char* const SKIP_PROCESS_WITH_PREFIX[] = {
+   "/vendor/bin/",
+   "/system/bin/",
+   "/apex/",
+   NULL  /* Sentinel value */
+};
+
+const char *const zoneinfo_node_field_names[ZI_NODE_FIELD_COUNT] = {
+    "nr_inactive_file",
+    "nr_active_file",
+};
+
+const char *const meminfo_field_names[MI_FIELD_COUNT] = {
+    "MemFree:",
+    "Cached:",
+    "SwapCached:",
+    "Buffers:",
+    "Shmem:",
+    "Unevictable:",
+    "SwapTotal:",
+    "SwapFree:",
+    "Active(anon):",
+    "Inactive(anon):",
+    "Active(file):",
+    "Inactive(file):",
+    "SReclaimable:",
+    "SUnreclaim:",
+    "KernelStack:",
+    "PageTables:",
+    "ION_heap:",
+    "ION_heap_pool:",
+    "CmaFree:",
+};
+
+const char *const vmstat_field_names[VS_FIELD_COUNT] = {
+    "nr_free_pages",
+    "nr_inactive_file",
+    "nr_active_file",
+    "workingset_refault",
+    "workingset_refault_file",
+    "pgscan_kswapd",
+    "pgscan_direct",
+    "pgscan_direct_throttle",
+};
+
+struct proc *pidhash[PIDHASH_SZ];
+
+/* protects procadjslot_list from concurrent access */
+std::shared_mutex adjslot_list_lock;
+/* procadjslot_list should be modified only from the main thread while exclusively holding
+ * adjslot_list_lock. Readers from non-main threads should hold adjslot_list_lock shared lock. */
+struct adjslot_list procadjslot_list[ADJTOSLOT_COUNT];
 
 /*
- * PSI monitor tracking window size.
- * PSI monitor generates events at most once per window,
- * therefore we poll memory state for the duration of
- * PSI_WINDOW_SIZE_MS after the event happens.
+ * Because killcnt array is sparse a two-level indirection is used
+ * to keep the size small. killcnt_idx stores index of the element in
+ * killcnt array. Index KILLCNT_INVALID_IDX indicates an unused slot.
  */
-#define PSI_WINDOW_SIZE_MS 1000
-/* Polling period after PSI signal when pressure is high */
-#define PSI_POLL_PERIOD_SHORT_MS 10
-/* Polling period after PSI signal when pressure is low */
-#define PSI_POLL_PERIOD_LONG_MS 100
+uint8_t killcnt_idx[ADJTOSLOT_COUNT];
+uint16_t killcnt[MAX_DISTINCT_OOM_ADJ];
+int killcnt_free_idx = 0;
+uint32_t killcnt_total = 0;
 
-#define FAIL_REPORT_RLIMIT_MS 1000
+LmkdDBusService dbus_service = {0};
 
-/* swap_free_low_percentage default value */
-#define DEF_LOW_SWAP 10
-/* thrashing_limit default value */
-#define DEF_THRASHING_LOWRAM 30
-#define DEF_THRASHING 100
-/* thrashing_limit_decay default value */
-#define DEF_THRASHING_DECAY_LOWRAM 50
-#define DEF_THRASHING_DECAY 10
-/* psi_partial_stall_ms default value */
-#define DEF_PARTIAL_STALL_LOWRAM 200
-#define DEF_PARTIAL_STALL 70
-/* psi_complete_stall_ms default value */
-#define DEF_COMPLETE_STALL 700
-
-#define WATCHDOG_TIMEOUT_SEC 2
-
-/* Configuration system */
-static GKeyFile *config = NULL;
-static bool config_loaded = false;
+/* PAGE_SIZE / 1024 */
+long page_k;
 
 static void load_config(void) {
     if (config_loaded)
@@ -221,483 +396,6 @@ static bool get_cgroup_attribute_path(const char *attr, std::string &path) {
     path = std::string(mount_path) + "/" + attr;
     return true;
 }
-
-/* memory pressure levels */
-enum vmpressure_level {
-    VMPRESS_LEVEL_LOW = 0,
-    VMPRESS_LEVEL_MEDIUM,
-    VMPRESS_LEVEL_CRITICAL,
-    VMPRESS_LEVEL_COUNT
-};
-
-static const char *level_name[] = {
-    "low",
-    "medium",
-    "critical"};
-
-struct {
-    int64_t min_nr_free_pages; /* recorded but not used yet */
-    int64_t max_nr_free_pages;
-} low_pressure_mem = {-1, -1};
-
-struct psi_threshold {
-    enum psi_stall_type stall_type;
-    int threshold_ms;
-};
-
-static int level_oomadj[VMPRESS_LEVEL_COUNT];
-static int mpevfd[VMPRESS_LEVEL_COUNT] = {-1, -1, -1};
-static bool pidfd_supported;
-static int last_kill_pid_or_fd = -1;
-static struct timespec last_kill_tm;
-
-/* lmkd configurable parameters */
-static bool enable_pressure_upgrade;
-static int64_t upgrade_pressure;
-static int64_t downgrade_pressure;
-static bool low_ram_device;
-static bool kill_heaviest_task;
-static unsigned long kill_timeout_ms;
-static bool use_minfree_levels;
-static bool per_app_memcg;
-static int swap_free_low_percentage;
-static int psi_partial_stall_ms;
-static int psi_complete_stall_ms;
-static int thrashing_limit_pct;
-static int thrashing_limit_decay_pct;
-static int thrashing_critical_pct;
-static int swap_util_max;
-static int64_t filecache_min_kb;
-static int64_t stall_limit_critical;
-static bool use_psi_monitors = false;
-static struct psi_threshold psi_thresholds[VMPRESS_LEVEL_COUNT] = {
-    {PSI_SOME, 70},  /* 70ms out of 1sec for partial stall */
-    {PSI_SOME, 100}, /* 100ms out of 1sec for partial stall */
-    {PSI_FULL, 70},  /* 70ms out of 1sec for complete stall */
-};
-
-static Reaper reaper;
-static int reaper_comm_fd[2];
-
-enum polling_update {
-    POLLING_DO_NOT_CHANGE,
-    POLLING_START,
-    POLLING_PAUSE,
-    POLLING_RESUME,
-};
-
-/*
- * Data used for periodic polling for the memory state of the device.
- * Note that when system is not polling poll_handler is set to NULL,
- * when polling starts poll_handler gets set and is reset back to
- * NULL when polling stops.
- */
-struct polling_params {
-    struct event_handler_info *poll_handler;
-    struct event_handler_info *paused_handler;
-    struct timespec poll_start_tm;
-    struct timespec last_poll_tm;
-    int polling_interval_ms;
-    enum polling_update update;
-};
-
-/* data required to handle events */
-struct event_handler_info {
-    int data;
-    void (*handler)(int data, uint32_t events, struct polling_params *poll_params);
-    bool bypass_call_handler;
-};
-
-/* vmpressure event handler data */
-static struct event_handler_info vmpressure_hinfo[VMPRESS_LEVEL_COUNT];
-
-/*
- * 3 memory pressure levels, 1 fd to wait for process death + 1 fd to receive kill failure notifications
- */
-#define MAX_EPOLL_EVENTS (VMPRESS_LEVEL_COUNT + 1 + 1)
-static int epollfd;
-static int maxevents;
-
-/* OOM score values used by both kernel and framework */
-#define OOM_SCORE_ADJ_MIN (-1000)
-#define OOM_SCORE_ADJ_MAX 1000
-
-static std::array<int, MAX_TARGETS> lowmem_adj;
-static std::array<int, MAX_TARGETS> lowmem_minfree;
-static int lowmem_targets_size;
-
-/* Fields to parse in /proc/zoneinfo */
-/* zoneinfo per-zone fields */
-enum zoneinfo_zone_field {
-    ZI_ZONE_NR_FREE_PAGES = 0,
-    ZI_ZONE_MIN,
-    ZI_ZONE_LOW,
-    ZI_ZONE_HIGH,
-    ZI_ZONE_PRESENT,
-    ZI_ZONE_NR_FREE_CMA,
-    ZI_ZONE_FIELD_COUNT
-};
-
-static const char *const zoneinfo_zone_field_names[ZI_ZONE_FIELD_COUNT] = {
-    "nr_free_pages",
-    "min",
-    "low",
-    "high",
-    "present",
-    "nr_free_cma",
-};
-
-/* zoneinfo per-zone special fields */
-enum zoneinfo_zone_spec_field {
-    ZI_ZONE_SPEC_PROTECTION = 0,
-    ZI_ZONE_SPEC_PAGESETS,
-    ZI_ZONE_SPEC_FIELD_COUNT,
-};
-
-static const char *const zoneinfo_zone_spec_field_names[ZI_ZONE_SPEC_FIELD_COUNT] = {
-    "protection:",
-    "pagesets",
-};
-
-
-/* List of process names to skip during registration */
-static const char* const SKIP_PROCESS_NAMES[] = {
-   "<unknown>",
-   "/usr/libexec/xdg-permission-store",
-   "/usr/libexec/flashlightd",
-   "/usr/libexec/localsearch-3",
-   "/usr/libexec/xdg-desktop-portal-gtk",
-   "/usr/libexec/gsd-printer",
-   "/usr/libexec/evolution-calendar-factory",
-   "/usr/libexec/xdg-desktop-portal-gnome",
-   "/usr/libexec/flatpak-session-helper",
-   "/usr/bin/callaudiod",
-   "/usr/libexec/feedbackd",
-   "/usr/libexec/evolution-source-registry",
-   "/usr/libexec/at-spi-bus-launcher",
-   "/usr/libexec/gsd-adapter",
-   "/usr/libexec/phosh",
-   "/usr/bin/dbus-daemon",
-   "/usr/libexec/pqdbus",
-   "/usr/libexec/gvfsd",
-   "/usr/libexec/dconf-service",
-   "python3 /usr/bin/mmsd",
-   "/usr/bin/gnome-keyring-daemon",
-   "/usr/libexec/gnome-session-binary",
-   "/usr/libexec/android-vibrator",
-   "/usr/libexec/assistant-button",
-   "/usr/libexec/biomd-session",
-   "python3 /usr/libexec/furios-gallery-daemon",
-   "/usr/libexec/gcr-ssh-agent",
-   "/usr/libexec/gesture-sensors",
-   "/usr/libexec/gnome-session-ctl",
-   "/usr/libexec/bluetooth/obexd",
-   "/usr/bin/phoc",
-   "(sd-pam)",
-   "/usr/bin/mpris-proxy",
-   "/usr/bin/pipewire",
-   "/usr/bin/pulseaudio",
-   "media.swcodec",
-   "media.codec",
-   "media.extractor",
-   "media.metrics",
-   "/usr/lib/systemd/systemd",
-   "/usr/sbin/vnstatd",
-   "/usr/libexec/goa-daemon",
-   "/usr/libexec/goa-identity-service",
-   "/usr/libexec/evolution-addressbook-factory",
-   "/usr/libexec/at-spi2-registryd",
-   "/usr/libexec/gvfs-udisks2-volume-monitor",
-   "/usr/libexec/gvfs-goa-volume-monitor",
-   "/usr/libexec/gvfs-afc-volume-monitor",
-   "/usr/libexec/gvfs-mtp-volume-monitor",
-   "/usr/libexec/gvfs-gphoto2-volume-monitor",
-   "/usr/bin/gnome-calls",
-   "/usr/libexec/gsd-a11y-settings",
-   "/usr/libexec/gsd-color",
-   "/usr/libexec/gsd-datetime",
-   "/usr/libexec/gsd-housekeeping",
-   "/usr/libexec/gsd-keyboard",
-   "/usr/libexec/gsd-media-keys",
-   "/usr/libexec/gsd-power",
-   "/usr/libexec/gsd-print-notifications",
-   "/usr/libexec/gsd-rfkill",
-   "/usr/libexec/gsd-screensaver-proxy",
-   "/usr/libexec/gsd-sharing",
-   "/usr/libexec/gsd-smartcard",
-   "/usr/libexec/gsd-sound",
-   "/usr/libexec/gsd-usb-protection",
-   "/usr/libexec/gsd-wacom",
-   "/usr/libexec/gsd-wwan",
-   "/usr/bin/phosh-osk-stub",
-   "/usr/bin/chatty",
-   "/usr/libexec/xdg-desktop-portal",
-   "/usr/libexec/evolution-alarm-notify",
-   "dbus-monitor",
-   "/usr/libexec/xdg-desktop-portal-phosh",
-   "/usr/libexec/gvfsd-metadata",
-   "/usr/libexec/gvfsd-recent",
-   "/usr/libexec/gvfsd-trash",
-   "/usr/libexec/evolution-data-server/evolution-alarm-notify",
-   "/usr/bin/gnome-clocks",
-   "python3 /usr/bin/andromeda",
-   "/usr/bin/python3 /usr/bin/andromeda",
-   /* Andromeda */
-   "com.android.providers.media.module",
-   "com.android.nfc",
-   "io.furios.launcher",
-   "android.process.acore",
-   "io.furios.launcher:minimal",
-   "com.google.android.gms",
-   "com.android.permissioncontroller",
-   "com.android.systemui",
-   "com.android.networkstack.process",
-   "android.ext.services",
-   "webview_zygote",
-   "com.android.smspush",
-   "com.android.cellbroadcastreceiver.module",
-   "com.android.dialer",
-   "com.android.inputmethod.latin",
-   "com.android.messaging",
-   "com.android.externalstorage",
-   "android.process.media",
-   NULL  /* Sentinel value */
-};
-
-/* List of process prefixes to skip during registration */
-static const char* const SKIP_PROCESS_WITH_PREFIX[] = {
-   "/vendor/bin/",
-   "/system/bin/",
-   "/apex/",
-   NULL  /* Sentinel value */
-};
-
-/* see __MAX_NR_ZONES definition in kernel mmzone.h */
-#define MAX_NR_ZONES 6
-
-union zoneinfo_zone_fields {
-    struct {
-        int64_t nr_free_pages;
-        int64_t min;
-        int64_t low;
-        int64_t high;
-        int64_t present;
-        int64_t nr_free_cma;
-    } field;
-    int64_t arr[ZI_ZONE_FIELD_COUNT];
-};
-
-struct zoneinfo_zone {
-    union zoneinfo_zone_fields fields;
-    int64_t protection[MAX_NR_ZONES];
-    int64_t max_protection;
-};
-
-/* zoneinfo per-node fields */
-enum zoneinfo_node_field {
-    ZI_NODE_NR_INACTIVE_FILE = 0,
-    ZI_NODE_NR_ACTIVE_FILE,
-    ZI_NODE_FIELD_COUNT
-};
-
-static const char *const zoneinfo_node_field_names[ZI_NODE_FIELD_COUNT] = {
-    "nr_inactive_file",
-    "nr_active_file",
-};
-
-union zoneinfo_node_fields {
-    struct {
-        int64_t nr_inactive_file;
-        int64_t nr_active_file;
-    } field;
-    int64_t arr[ZI_NODE_FIELD_COUNT];
-};
-
-struct zoneinfo_node {
-    int id;
-    int zone_count;
-    struct zoneinfo_zone zones[MAX_NR_ZONES];
-    union zoneinfo_node_fields fields;
-};
-
-/* for now two memory nodes is more than enough */
-#define MAX_NR_NODES 2
-
-struct zoneinfo {
-    int node_count;
-    struct zoneinfo_node nodes[MAX_NR_NODES];
-    int64_t totalreserve_pages;
-    int64_t total_inactive_file;
-    int64_t total_active_file;
-};
-
-/* Fields to parse in /proc/meminfo */
-enum meminfo_field {
-    MI_NR_FREE_PAGES = 0,
-    MI_CACHED,
-    MI_SWAP_CACHED,
-    MI_BUFFERS,
-    MI_SHMEM,
-    MI_UNEVICTABLE,
-    MI_TOTAL_SWAP,
-    MI_FREE_SWAP,
-    MI_ACTIVE_ANON,
-    MI_INACTIVE_ANON,
-    MI_ACTIVE_FILE,
-    MI_INACTIVE_FILE,
-    MI_SRECLAIMABLE,
-    MI_SUNRECLAIM,
-    MI_KERNEL_STACK,
-    MI_PAGE_TABLES,
-    MI_ION_HELP,
-    MI_ION_HELP_POOL,
-    MI_CMA_FREE,
-    MI_FIELD_COUNT
-};
-
-static const char *const meminfo_field_names[MI_FIELD_COUNT] = {
-    "MemFree:",
-    "Cached:",
-    "SwapCached:",
-    "Buffers:",
-    "Shmem:",
-    "Unevictable:",
-    "SwapTotal:",
-    "SwapFree:",
-    "Active(anon):",
-    "Inactive(anon):",
-    "Active(file):",
-    "Inactive(file):",
-    "SReclaimable:",
-    "SUnreclaim:",
-    "KernelStack:",
-    "PageTables:",
-    "ION_heap:",
-    "ION_heap_pool:",
-    "CmaFree:",
-};
-
-union meminfo {
-    struct {
-        int64_t nr_free_pages;
-        int64_t cached;
-        int64_t swap_cached;
-        int64_t buffers;
-        int64_t shmem;
-        int64_t unevictable;
-        int64_t total_swap;
-        int64_t free_swap;
-        int64_t active_anon;
-        int64_t inactive_anon;
-        int64_t active_file;
-        int64_t inactive_file;
-        int64_t sreclaimable;
-        int64_t sunreclaimable;
-        int64_t kernel_stack;
-        int64_t page_tables;
-        int64_t ion_heap;
-        int64_t ion_heap_pool;
-        int64_t cma_free;
-        /* fields below are calculated rather than read from the file */
-        int64_t nr_file_pages;
-    } field;
-    int64_t arr[MI_FIELD_COUNT];
-};
-
-/* Fields to parse in /proc/vmstat */
-enum vmstat_field {
-    VS_FREE_PAGES,
-    VS_INACTIVE_FILE,
-    VS_ACTIVE_FILE,
-    VS_WORKINGSET_REFAULT,
-    VS_WORKINGSET_REFAULT_FILE,
-    VS_PGSCAN_KSWAPD,
-    VS_PGSCAN_DIRECT,
-    VS_PGSCAN_DIRECT_THROTTLE,
-    VS_FIELD_COUNT
-};
-
-static const char *const vmstat_field_names[VS_FIELD_COUNT] = {
-    "nr_free_pages",
-    "nr_inactive_file",
-    "nr_active_file",
-    "workingset_refault",
-    "workingset_refault_file",
-    "pgscan_kswapd",
-    "pgscan_direct",
-    "pgscan_direct_throttle",
-};
-
-union vmstat {
-    struct {
-        int64_t nr_free_pages;
-        int64_t nr_inactive_file;
-        int64_t nr_active_file;
-        int64_t workingset_refault;
-        int64_t workingset_refault_file;
-        int64_t pgscan_kswapd;
-        int64_t pgscan_direct;
-        int64_t pgscan_direct_throttle;
-    } field;
-    int64_t arr[VS_FIELD_COUNT];
-};
-
-enum field_match_result {
-    NO_MATCH,
-    PARSE_FAIL,
-    PARSE_SUCCESS
-};
-
-struct adjslot_list {
-    struct adjslot_list *next;
-    struct adjslot_list *prev;
-};
-
-struct proc {
-    struct adjslot_list asl;
-    int pid;
-    int pidfd;
-    uid_t uid;
-    int oomadj;
-    pid_t reg_pid; /* PID of the process that registered this record */
-    bool valid;
-    struct proc *pidhash_next;
-};
-
-struct reread_data {
-    const char *filename;
-    int fd;
-};
-
-#define PIDHASH_SZ 1024
-static struct proc *pidhash[PIDHASH_SZ];
-#define pid_hashfn(x) ((((x) >> 8) ^ (x)) & (PIDHASH_SZ - 1))
-
-#define ADJTOSLOT(adj) ((adj) + -OOM_SCORE_ADJ_MIN)
-#define ADJTOSLOT_COUNT (ADJTOSLOT(OOM_SCORE_ADJ_MAX) + 1)
-
-/* protects procadjslot_list from concurrent access */
-static std::shared_mutex adjslot_list_lock;
-/* procadjslot_list should be modified only from the main thread while exclusively holding
- * adjslot_list_lock. Readers from non-main threads should hold adjslot_list_lock shared lock. */
-static struct adjslot_list procadjslot_list[ADJTOSLOT_COUNT];
-
-#define MAX_DISTINCT_OOM_ADJ 32
-#define KILLCNT_INVALID_IDX 0xFF
-/*
- * Because killcnt array is sparse a two-level indirection is used
- * to keep the size small. killcnt_idx stores index of the element in
- * killcnt array. Index KILLCNT_INVALID_IDX indicates an unused slot.
- */
-static uint8_t killcnt_idx[ADJTOSLOT_COUNT];
-static uint16_t killcnt[MAX_DISTINCT_OOM_ADJ];
-static int killcnt_free_idx = 0;
-static uint32_t killcnt_total = 0;
-
-static LmkdDBusService dbus_service = {0};
-
-/* PAGE_SIZE / 1024 */
-static long page_k;
 
 static int clamp(int low, int high, int value) {
     return std::max(std::min(value, high), low);
@@ -1358,19 +1056,6 @@ static int psi_parse_cpu(struct psi_data *psi_data) {
     return psi_parse(&file_data, psi_data->cpu_stats, false);
 }
 
-enum wakeup_reason {
-    Event,
-    Polling
-};
-
-struct wakeup_info {
-    struct timespec wakeup_tm;
-    struct timespec prev_wakeup_tm;
-    struct timespec last_event_tm;
-    int wakeups_since_event;
-    int skipped_wakeups;
-};
-
 /*
  * After the initial memory pressure event is received lmkd schedules periodic wakeups to check
  * the memory conditions and kill if needed (polling). This is done because pressure events are
@@ -1391,26 +1076,6 @@ static void record_wakeup_time(struct timespec *tm, enum wakeup_reason reason, s
         wi->wakeups_since_event++;
     }
 }
-
-enum kill_reasons {
-    NONE = -1, /* To denote no kill condition */
-    PRESSURE_AFTER_KILL = 0,
-    NOT_RESPONDING,
-    LOW_SWAP_AND_THRASHING,
-    LOW_MEM_AND_SWAP,
-    LOW_MEM_AND_THRASHING,
-    DIRECT_RECL_AND_THRASHING,
-    LOW_MEM_AND_SWAP_UTIL,
-    LOW_FILECACHE_AFTER_THRASHING,
-    KILL_REASON_COUNT
-};
-
-struct kill_info {
-    enum kill_reasons kill_reason;
-    const char *kill_desc;
-    int thrashing;
-    int max_thrashing;
-};
 
 /* Note: returned entry is only an anchor and does not hold a valid process info.
  * When called from a non-main thread, adjslot_list_lock read lock should be taken. */
@@ -1811,19 +1476,6 @@ enum vmpressure_level upgrade_level(enum vmpressure_level level) {
 enum vmpressure_level downgrade_level(enum vmpressure_level level) {
     return (enum vmpressure_level)((level > VMPRESS_LEVEL_LOW) ? level - 1 : level);
 }
-
-enum zone_watermark {
-    WMARK_MIN = 0,
-    WMARK_LOW,
-    WMARK_HIGH,
-    WMARK_NONE
-};
-
-struct zone_watermarks {
-    long high_wmark;
-    long low_wmark;
-    long min_wmark;
-};
 
 /*
  * Returns lowest breached watermark or WMARK_NONE.
