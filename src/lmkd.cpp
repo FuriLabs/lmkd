@@ -17,15 +17,12 @@
 #include <lmkd.h>
 #include <psi/psi.h>
 
+#include "config.h"
 #include "pidfd-compat.h"
 #include "processwatcher.h"
 #include "reaper.h"
 #include "watchdog.h"
 #include "dbus.h"
-
-/* Configuration system */
-GKeyFile *config = NULL;
-bool config_loaded = false;
 
 const char *const level_name[VMPRESS_LEVEL_COUNT] = {
     "low",
@@ -265,85 +262,6 @@ LmkdDBusService dbus_service = {0};
 
 /* PAGE_SIZE / 1024 */
 long page_k;
-
-static void load_config(void) {
-    if (config_loaded)
-        return;
-
-    config = g_key_file_new();
-    GError *error = NULL;
-
-    /* Try port specific configuration first (/usr/lib/furios/device/lmkd.conf)
-     * then default configuration (/usr/share/lmkd/lmkd.conf)
-     * and user configuration (/etc/lmkd.conf) */
-    const char *config_paths[] = {
-        "/usr/lib/furios/device/lmkd.conf",
-        "/usr/share/lmkd/lmkd.conf",
-        "/etc/lmkd.conf",
-        NULL
-    };
-
-    for (int i = 0; config_paths[i]; i++) {
-        if (g_file_test(config_paths[i], G_FILE_TEST_EXISTS)) {
-            if (g_key_file_load_from_file(config, config_paths[i], G_KEY_FILE_NONE, &error)) {
-                g_debug("Loaded configuration from %s", config_paths[i]);
-                break;
-            } else {
-                g_printerr("Failed to load config from %s: %s",
-                           config_paths[i],
-                           error->message);
-                g_error_free(error);
-                error = NULL;
-            }
-        }
-    }
-    config_loaded = true;
-}
-
-static bool get_config_bool(const char *key, bool default_value) {
-    load_config();
-    GError *error = NULL;
-
-    if (!config)
-        return default_value;
-
-    gboolean value = g_key_file_get_boolean(config, "lmkd", key, &error);
-    if (error) {
-        g_error_free(error);
-        return default_value;
-    }
-    return value;
-}
-
-static int32_t get_config_int32(const char *key, int32_t default_value) {
-    load_config();
-    GError *error = NULL;
-
-    if (!config)
-        return default_value;
-
-    gint value = g_key_file_get_integer(config, "lmkd", key, &error);
-    if (error) {
-        g_error_free(error);
-        return default_value;
-    }
-    return (int32_t)value;
-}
-
-static int64_t get_config_int64(const char *key, int64_t default_value) {
-    load_config();
-    GError *error = NULL;
-
-    if (!config)
-        return default_value;
-
-    gint64 value = g_key_file_get_int64(config, "lmkd", key, &error);
-    if (error) {
-        g_error_free(error);
-        return default_value;
-    }
-    return value;
-}
 
 static bool find_cgroup_mount(const char *controller, char *mount_path, size_t path_len) {
     FILE *mounts = fopen("/proc/mounts", "r");
@@ -2272,7 +2190,7 @@ static bool init_psi_monitors() {
      * hiearchy.
      */
     bool use_new_strategy =
-        get_config_bool("use_new_strategy", low_ram_device || !use_minfree_levels);
+        config_get_bool("use_new_strategy", low_ram_device || !use_minfree_levels);
     if (!use_new_strategy && memcg_version() != MemcgVersion::kV1) {
         g_printerr("Old kill strategy can only be used with v1 cgroup hierarchy");
         return false;
@@ -2303,7 +2221,7 @@ static bool init_psi_monitors() {
 static bool init_monitors() {
     g_debug("Attempting to initialize PSI monitors...");
     /* Try to use psi monitor first if kernel has it */
-    use_psi_monitors = get_config_bool("use_psi", true) &&
+    use_psi_monitors = config_get_bool("use_psi", true) &&
                        init_psi_monitors();
 
     if (use_psi_monitors) {
@@ -2883,43 +2801,43 @@ static void mainloop(void) {
 static void update_props() {
     /* By default disable low level vmpressure events */
     level_oomadj[VMPRESS_LEVEL_LOW] =
-        get_config_int32("low", OOM_SCORE_ADJ_MAX + 1);
+        config_get_int32("low", OOM_SCORE_ADJ_MAX + 1);
     level_oomadj[VMPRESS_LEVEL_MEDIUM] =
-        get_config_int32("medium", 800);
+        config_get_int32("medium", 800);
     level_oomadj[VMPRESS_LEVEL_CRITICAL] =
-        get_config_int32("critical", 0);
+        config_get_int32("critical", 0);
 
     /* By default disable upgrade/downgrade logic */
     enable_pressure_upgrade =
-        get_config_bool("critical_upgrade", false);
+        config_get_bool("critical_upgrade", false);
     upgrade_pressure =
-        (int64_t)get_config_int32("upgrade_pressure", 100);
+        (int64_t)config_get_int32("upgrade_pressure", 100);
     downgrade_pressure =
-        (int64_t)get_config_int32("downgrade_pressure", 100);
+        (int64_t)config_get_int32("downgrade_pressure", 100);
     kill_heaviest_task =
-        get_config_bool("kill_heaviest_task", false);
+        config_get_bool("kill_heaviest_task", false);
 
-    low_ram_device = get_config_bool("low_ram", false);
+    low_ram_device = config_get_bool("low_ram", false);
 
     kill_timeout_ms =
-        (unsigned long)get_config_int32("kill_timeout_ms", 100);
+        (unsigned long)config_get_int32("kill_timeout_ms", 100);
     use_minfree_levels =
-        get_config_bool("use_minfree_levels", false);
+        config_get_bool("use_minfree_levels", false);
     per_app_memcg =
-        get_config_bool("per_app_memcg", low_ram_device);
-    swap_free_low_percentage = clamp(0, 100, get_config_int32("swap_free_low_percentage", DEF_LOW_SWAP));
-    psi_partial_stall_ms = get_config_int32("psi_partial_stall_ms",
+        config_get_bool("per_app_memcg", low_ram_device);
+    swap_free_low_percentage = clamp(0, 100, config_get_int32("swap_free_low_percentage", DEF_LOW_SWAP));
+    psi_partial_stall_ms = config_get_int32("psi_partial_stall_ms",
                                             low_ram_device ? DEF_PARTIAL_STALL_LOWRAM : DEF_PARTIAL_STALL);
-    psi_complete_stall_ms = get_config_int32("psi_complete_stall_ms",
+    psi_complete_stall_ms = config_get_int32("psi_complete_stall_ms",
                                              DEF_COMPLETE_STALL);
     thrashing_limit_pct =
-        std::max(0, get_config_int32("thrashing_limit", low_ram_device ? DEF_THRASHING_LOWRAM : DEF_THRASHING));
-    thrashing_limit_decay_pct = clamp(0, 100, get_config_int32("thrashing_limit_decay", low_ram_device ? DEF_THRASHING_DECAY_LOWRAM : DEF_THRASHING_DECAY));
+        std::max(0, config_get_int32("thrashing_limit", low_ram_device ? DEF_THRASHING_LOWRAM : DEF_THRASHING));
+    thrashing_limit_decay_pct = clamp(0, 100, config_get_int32("thrashing_limit_decay", low_ram_device ? DEF_THRASHING_DECAY_LOWRAM : DEF_THRASHING_DECAY));
     thrashing_critical_pct = std::max(
-        0, get_config_int32("thrashing_limit_critical", thrashing_limit_pct * 2));
-    swap_util_max = clamp(0, 100, get_config_int32("swap_util_max", 100));
-    filecache_min_kb = get_config_int64("filecache_min_kb", 0);
-    stall_limit_critical = get_config_int64("stall_limit_critical", 100);
+        0, config_get_int32("thrashing_limit_critical", thrashing_limit_pct * 2));
+    swap_util_max = clamp(0, 100, config_get_int32("swap_util_max", 100));
+    filecache_min_kb = config_get_int64("filecache_min_kb", 0);
+    stall_limit_critical = config_get_int64("stall_limit_critical", 100);
 
     /* Debug output for all loaded configuration values */
     g_debug("Configuration loaded:");
@@ -2948,6 +2866,12 @@ static void update_props() {
 int main(int argc __unused, char **argv __unused) {
     g_debug("lmkd starting");
     g_debug("Build: %s %s", __DATE__, __TIME__);
+
+    /* Initialize configuration system */
+    if (!config_init()) {
+        g_printerr("Failed to initialize configuration system");
+        return 1;
+    }
 
     update_props();
     g_debug("Configuration loaded");
@@ -2995,8 +2919,7 @@ int main(int argc __unused, char **argv __unused) {
         mainloop();
     }
 
-    if (config)
-        g_key_file_free(config);
+    config_cleanup();
 
     if (g_lmkd_dbus_service) {
         lmkd_dbus_service_cleanup(g_lmkd_dbus_service);

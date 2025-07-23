@@ -17,7 +17,8 @@ LMKD_SOURCES = $(SRCDIR)/lmkd.cpp \
                $(SRCDIR)/reaper.cpp \
                $(SRCDIR)/watchdog.cpp \
                $(SRCDIR)/processwatcher.cpp \
-               $(SRCDIR)/dbus.cpp
+               $(SRCDIR)/dbus.cpp \
+               $(SRCDIR)/config.cpp
 
 PSI_SOURCES = $(LIBPSI_DIR)/psi.cpp
 
