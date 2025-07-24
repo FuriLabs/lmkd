@@ -1,6 +1,5 @@
 /**
  * SPDX-License-Identifier: Apache-2.0
- * Copyright (C) 2013 The Android Open Source Project
  * Copyright (C) 2025 Bardia Moshiri <bardia@furilabs.com>
  */
 
