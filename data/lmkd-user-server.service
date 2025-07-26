@@ -5,3 +5,6 @@ Description=Low Memory Killer user server
 Type=simple
 ExecStart=/usr/libexec/lmkd-user-server
 Restart=on-failure
+
+[Install]
+WantedBy=graphical-session-pre.target
