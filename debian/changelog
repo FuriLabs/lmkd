@@ -1,0 +1,64 @@
+lmkd (0.3) unstable; urgency=medium
+
+  [ Bardia Moshiri ]
+  * implement lmkd user server daemon
+  * allow to load port specific configurations
+  * add support for dbus methods and signals.
+    * emit ProcessKilled when we kill a process allowing user session processes to act accordingly
+    * emit PressureStateChanged when device pressure state changes between normal (0) and pressure (1)
+  * processwatcher: add Andromeda to the ignored process list
+  * processwatcher: only watch for processes when we get a pressure event
+  * Debug: Dump all loaded configuration values on startup
+  * data: fine tune default settings for very conservative and aggressive
+  * more cleanups and styling fixes
+  * drop all forward declarations
+  * move definitions from cpp to header and drop unused ones
+  * switch to spdx license headers
+  * split configuration handling to config.cpp/h
+  * config: fixup copyright header
+  * debian: add libnotify-dev to build depends
+  
+  [ Simon Raffeiner ]
+  * systemd unit: Fix circular dependency
+  * systemd unit: Drop StandardOutput, StandardError and SyslogIdentifier
+  * debian: Add changelog file
+
+ -- Bardia Moshiri <bardia@furilabs.com>  Thu, 24 Jul 2025 19:55:28 -0400
+
+lmkd (0.2) unstable; urgency=medium
+
+  [ Bardia Moshiri ]
+  * processwatcher: implement a way to skip processes with certain cmdlines from registration
+  * processwatcher: optimize call handler and skip processes with UID 0
+  * processwatcher: add all important system services and drivers to ignored list
+  * processwatcher: add all system service users to UID ignore
+  * watchdog: make more messages debug instead of warning
+  * data: tune settings
+  * drop enable_debug and use g_debug for them
+  * circleci: add configs
+  
+ -- Bardia Moshiri <bardia@furilabs.com>  Mon, 14 Jul 2025 21:19:51 -0400
+
+lmkd (0.1) unstable; urgency=medium
+
+  [ Bardia Moshiri ]
+
+  initial implementation
+    
+  * initial draft code is taken from Android LMKd API33 QPR3.
+
+  * some of the easier adaptations/fixes include:
+  * replace all Android cgroups to GNU/Linux cgroups
+  * adapt all init/property management code with systemd and configurations
+  * drop control socket since we need to detect processes on our own here
+  * drop pidfd and bpf wrappers and make use of GNU/Linux alternatives
+  * swap out all android logging and bionic functions with glib equivalents
+    
+  * since Android builds and controls the entire ecosystem, they have the ability to make system_server call back into LMKd and add PIDs one by one, but we don't have that leverage.
+  * make use of netlink connector to wrap in all processes in the system as a candidate for reaper (initial netlink connector code comes from Batman: https://github.com/FuriLabs/batman/blob/trixie/src/nicerdicer.c)
+    
+  * the logic for psi and epoll remains the same as Android, so for the most part the behaviour is not too different.
+    
+  * everything was linted pretty heavily with clang-format using style "{BasedOnStyle: LLVM, IndentWidth: 4, UseTab: Never, ColumnLimit: 0, BreakBeforeBraces: Attach, AllowShortIfStatementsOnASingleLine: true, AllowShortFunctionsOnASingleLine: All, AllowShortBlocksOnASingleLine: true, AllowShortLoopsOnASingleLine: true, BinPackArguments: false, BinPackParameters: false}" with slight modifications
+
+ -- Bardia Moshiri <bardia@furilabs.com>  Sun, 13 Jul 2025 22:14:20 -0400
