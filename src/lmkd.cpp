@@ -93,6 +93,7 @@ const char *const zoneinfo_zone_spec_field_names[ZI_ZONE_SPEC_FIELD_COUNT] = {
 /* List of process names to skip during registration */
 const char* const SKIP_PROCESS_NAMES[] = {
    "<unknown>",
+   "/usr/libexec/lmkd-user-server",
    "/usr/libexec/xdg-permission-store",
    "/usr/libexec/flashlightd",
    "/usr/libexec/localsearch-3",
