@@ -5,8 +5,6 @@
 
 #include "config.h"
 
-#include <glib.h>
-
 /* Configuration system */
 static GKeyFile *config = NULL;
 static bool config_loaded = false;
@@ -40,6 +38,7 @@ static void load_config(void) {
             }
         }
     }
+
     config_loaded = true;
 }
 
@@ -59,7 +58,6 @@ void config_cleanup(void) {
 bool config_get_bool(const char *key, bool default_value) {
     load_config();
     GError *error = NULL;
-
     if (!config)
         return default_value;
 
@@ -74,7 +72,6 @@ bool config_get_bool(const char *key, bool default_value) {
 int32_t config_get_int32(const char *key, int32_t default_value) {
     load_config();
     GError *error = NULL;
-
     if (!config)
         return default_value;
 
@@ -89,7 +86,6 @@ int32_t config_get_int32(const char *key, int32_t default_value) {
 int64_t config_get_int64(const char *key, int64_t default_value) {
     load_config();
     GError *error = NULL;
-
     if (!config)
         return default_value;
 
@@ -97,6 +93,25 @@ int64_t config_get_int64(const char *key, int64_t default_value) {
     if (error) {
         g_error_free(error);
         return default_value;
+    }
+    return value;
+}
+
+gchar **config_get_string_list(const char *key, gsize *length) {
+    load_config();
+    GError *error = NULL;
+    if (!config) {
+        if (length)
+            *length = 0;
+        return NULL;
+    }
+
+    gchar **value = g_key_file_get_string_list(config, "lmkd", key, length, &error);
+    if (error) {
+        g_error_free(error);
+        if (length)
+            *length = 0;
+        return NULL;
     }
     return value;
 }

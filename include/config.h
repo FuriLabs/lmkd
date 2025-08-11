@@ -2,12 +2,10 @@
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (C) 2025 Bardia Moshiri <bardia@furilabs.com>
  */
-
 #ifndef __LMKD_CONFIG_H__
 #define __LMKD_CONFIG_H__
 
-#include <stdbool.h>
-#include <stdint.h>
+#include <glib.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,6 +45,14 @@ int32_t config_get_int32(const char *key, int32_t default_value);
  * @return Configuration value or default_value
  */
 int64_t config_get_int64(const char *key, int64_t default_value);
+
+/**
+ * Get a string list configuration value
+ * @param key Configuration key name
+ * @param length Pointer to store the length of the returned array (can be NULL)
+ * @return Array of strings (must be freed with g_strfreev()) or NULL if not found
+ */
+gchar **config_get_string_list(const char *key, gsize *length);
 
 #ifdef __cplusplus
 }
