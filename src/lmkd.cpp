@@ -268,6 +268,8 @@ uint16_t killcnt[MAX_DISTINCT_OOM_ADJ];
 int killcnt_free_idx = 0;
 uint32_t killcnt_total = 0;
 
+gchar **additional_skip_processes = NULL;
+
 LmkdDBusService dbus_service = {0};
 
 /* PAGE_SIZE / 1024 */
@@ -2324,6 +2326,22 @@ static bool init_reaper() {
     return true;
 }
 
+static bool check_process_cmdline(const char *cmdline, const char *skip_name) {
+    /* For python programs, check the full command line */
+    if (strncmp(skip_name, "python3 ", 8) == 0) {
+        return strncmp(cmdline, skip_name, strlen(skip_name)) == 0;
+    }
+    /* For other programs, check if cmdline starts with the skip_name */
+    else {
+        if (strncmp(cmdline, skip_name, strlen(skip_name)) == 0) {
+            /* Make sure it's followed by space, null, or we're at end of skip_name */
+            char next_char = cmdline[strlen(skip_name)];
+            return (next_char == '\0' || next_char == ' ');
+        }
+    }
+    return false;
+}
+
 static bool should_skip_process(const char* cmdline) {
    if (!cmdline || !*cmdline)
        return false;
@@ -2334,24 +2352,18 @@ static bool should_skip_process(const char* cmdline) {
            return true;
    }
 
-   /* Check exact matches */
-   for (int i = 0; SKIP_PROCESS_NAMES[i] != NULL; i++) {
-       const char* skip_name = SKIP_PROCESS_NAMES[i];
-
-       /* For python programs, check the full command line */
-       if (strncmp(skip_name, "python3 ", 8) == 0) {
-           if (strncmp(cmdline, skip_name, strlen(skip_name)) == 0)
+   /* Check additional skip processes from config */
+   if (additional_skip_processes) {
+       for (gchar **ptr = additional_skip_processes; *ptr != NULL; ptr++) {
+           if (check_process_cmdline(cmdline, *ptr))
                return true;
        }
-       /* For other programs, check if cmdline starts with the skip_name */
-       else {
-           if (strncmp(cmdline, skip_name, strlen(skip_name)) == 0) {
-               /* Make sure it's followed by space, null, or we're at end of skip_name */
-               char next_char = cmdline[strlen(skip_name)];
-               if (next_char == '\0' || next_char == ' ')
-                   return true;
-           }
-       }
+   }
+
+   /* Check hardcoded exact matches */
+   for (int i = 0; SKIP_PROCESS_NAMES[i] != NULL; i++) {
+       if (check_process_cmdline(cmdline, SKIP_PROCESS_NAMES[i]))
+           return true;
    }
 
    return false;
@@ -2849,6 +2861,21 @@ static void update_props() {
     filecache_min_kb = config_get_int64("filecache_min_kb", 0);
     stall_limit_critical = config_get_int64("stall_limit_critical", 100);
 
+    /* Load additional skip processes from configuration */
+    if (additional_skip_processes) {
+        g_strfreev(additional_skip_processes);
+        additional_skip_processes = NULL;
+    }
+
+    gsize length;
+    additional_skip_processes = config_get_string_list("skip_processes", &length);
+
+    if (additional_skip_processes) {
+        g_debug("Loaded %zu additional skip processes from configuration", length);
+        for (gsize i = 0; i < length; i++)
+            g_debug("Added additional skip process: %s", additional_skip_processes[i]);
+    }
+
     /* Debug output for all loaded configuration values */
     g_debug("Configuration loaded:");
     g_debug("  level_oomadj[LOW]: %d", level_oomadj[VMPRESS_LEVEL_LOW]);
@@ -2927,6 +2954,11 @@ int main(int argc __unused, char **argv __unused) {
 
         g_debug("entering main loop");
         mainloop();
+    }
+
+    if (additional_skip_processes) {
+        g_strfreev(additional_skip_processes);
+        additional_skip_processes = NULL;
     }
 
     config_cleanup();
