@@ -161,6 +161,7 @@ const char* const SKIP_PROCESS_NAMES[] = {
    "/usr/libexec/gsd-wacom",
    "/usr/libexec/gsd-wwan",
    "/usr/bin/phosh-osk-stub",
+   "/usr/bin/phosh-osk-stevia",
    "/usr/bin/chatty",
    "/usr/libexec/xdg-desktop-portal",
    "/usr/libexec/evolution-alarm-notify",
@@ -176,6 +177,11 @@ const char* const SKIP_PROCESS_NAMES[] = {
    "python3 /usr/bin/andromeda",
    "/usr/bin/python3 /usr/bin/andromeda",
    "/usr/bin/ssh-agent",
+   "/usr/bin/tonegend",
+   "/usr/libexec/xdg-document-portal",
+   "/usr/libexec/phosh-calendar-server",
+   "xdg-dbus-proxy",
+   "/usr/libexec/gvfsd-http",
    /* Andromeda */
    "com.android.providers.media.module",
    "com.android.smspush",
@@ -1082,7 +1088,6 @@ static void watchdog_callback() {
 
         if (target.valid && reaper.kill({target.pidfd, target.pid, target.uid}, true) == 0) {
             g_warning("lmkd watchdog killed process %d, oom_score_adj %d", target.pid, oom_score);
-            /* Simple logging instead of killinfo_log */
             g_debug("WATCHDOG_KILL: pid=%d uid=%d oom_score=%d",
                     target.pid,
                     target.uid,
